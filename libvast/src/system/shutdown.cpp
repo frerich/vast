@@ -22,6 +22,8 @@
 
 #include <caf/response_promise.hpp>
 
+#include "caf/logger.hpp"
+
 namespace vast::system {
 
 template <class Policy>
