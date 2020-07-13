@@ -13,14 +13,14 @@
 
 #include "vast/system/spawn_index.hpp"
 
-#include <caf/actor.hpp>
-#include <caf/expected.hpp>
-#include <caf/settings.hpp>
-
 #include "vast/defaults.hpp"
 #include "vast/system/index.hpp"
 #include "vast/system/node.hpp"
 #include "vast/system/spawn_arguments.hpp"
+
+#include <caf/actor.hpp>
+#include <caf/expected.hpp>
+#include <caf/settings.hpp>
 
 namespace vast::system {
 
@@ -33,7 +33,9 @@ maybe_actor spawn_index(node_actor* self, spawn_arguments& args) {
   namespace sd = vast::defaults::system;
   auto idx
     = self->spawn(v2::index, args.dir / args.label,
-                  opt("system.max-partition-size", sd::max_partition_size));
+                  opt("system.max-partition-size", sd::max_partition_size),
+                  opt("system.in-mem-partitions", sd::max_in_mem_partitions),
+                  opt("system.taste-partitions", sd::taste_partitions));
   if (auto accountant = self->state.registry.find_by_label("accountant"))
     self->send(idx, caf::actor_cast<accountant_type>(accountant));
   return idx;
