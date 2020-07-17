@@ -369,6 +369,11 @@ protected:
     return static_cast<concrete_type&>(x);
   }
 
+  template <class T>
+  static const concrete_type<Derived>& upcast(const T& x) {
+    return static_cast<const concrete_type&>(x);
+  }
+
   concrete_type* copy() const final {
     return new Derived(derived());
   }
@@ -657,7 +662,7 @@ struct record_type final : recursive_type<record_type> {
   friend bool operator<(const record_type& x, const record_type& y);
 
   template <class Inspector>
-  friend auto inspect(Inspector& f, record_type& x) {
+  friend auto inspect(Inspector& f, const record_type& x) {
     return f(caf::meta::type_name("vast.record_type"), upcast(x), x.fields);
   }
 
