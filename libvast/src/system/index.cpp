@@ -658,7 +658,8 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
       // FIXME!
       // self->state.add_flush_listener(std::move(listener));
-    }};
+    },
+  };
 }
 
 } // namespace v2
