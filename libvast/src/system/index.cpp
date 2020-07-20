@@ -76,17 +76,13 @@ namespace vast::system {
 
 namespace v2 {
 
-index_state::index_state(caf::stateful_actor<index_state>* self)
-  : self(self), lru_partitions(0, partition_factory{this}) {
-}
-
-caf::actor index_state::partition_factory::operator()(const uuid& id) const {
+caf::actor partition_factory::operator()(const uuid& id) const {
   // Load partition from disk.
-  VAST_ASSERT(std::find(st_->persisted_partitions.begin(),
-                        st_->persisted_partitions.end(), id)
-              != st_->persisted_partitions.end());
-  auto path = st_->dir / to_string(id);
-  VAST_INFO(st_->self, "loads partition", id, "from path",
+  VAST_ASSERT(std::find(state_.persisted_partitions.begin(),
+                        state_.persisted_partitions.end(), id)
+              != state_.persisted_partitions.end());
+  auto path = state_.dir / to_string(id);
+  VAST_INFO(state_.self, "loads partition", id, "from path",
             path); // fixme: info -> debug
   // FIXME: Delegate I/O to filesystem actor.
   auto bytes = io::read(path);
@@ -95,7 +91,11 @@ caf::actor index_state::partition_factory::operator()(const uuid& id) const {
   auto chunk = chunk::make(std::move(*bytes));
   if (!chunk)
     return nullptr;
-  return st_->self->spawn(readonly_partition, id, *chunk);
+  return state_.self->spawn(readonly_partition, id, *chunk);
+}
+
+index_state::index_state(caf::stateful_actor<index_state>* self)
+  : self{self}, lru_partitions{0, partition_factory{*this}} {
 }
 
 caf::error index_state::load_from_disk() {
@@ -500,9 +500,8 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       }
       // Allows the client to query further results after initial taste.
       auto query_id = uuid::random();
-      auto lookup
-        = index_state::query_state{query_id, expr, std::move(candidates),
-                                   index_state::pending_query_map{}};
+      auto lookup = query_state{query_id, expr, std::move(candidates),
+                                pending_query_map{}};
       auto result = st.pending.emplace(lookup.id, std::move(lookup));
       VAST_ASSERT(result.second);
       auto& inserted_lookup = result.first->second;

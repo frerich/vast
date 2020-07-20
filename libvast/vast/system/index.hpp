@@ -30,6 +30,7 @@
 #include <caf/actor.hpp>
 #include <caf/behavior.hpp>
 #include <caf/fwd.hpp>
+#include <caf/meta/omittable_if_empty.hpp>
 #include <caf/meta/type_name.hpp>
 
 #include <unordered_map>
@@ -40,6 +41,9 @@
 namespace vast::system {
 
 namespace v2 {
+
+// FIXME: move to vast/fwd.hpp
+struct index_state;
 
 /// The state of the active partition.
 struct active_partition_state {
@@ -83,48 +87,59 @@ struct index_statistics {
   }
 };
 
+/// Loads partitions from disk by UUID.
+// FIXME: forward-declare in vast/fwd.hpp
+class partition_factory {
+public:
+  explicit partition_factory(index_state& state) : state_{state} {
+    // nop
+  }
+
+  caf::actor operator()(const uuid& id) const;
+
+private:
+  const index_state& state_;
+};
+
+// FIXME: move to vast/fwd.hpp
+using pending_query_map = detail::stable_map<uuid, evaluation_triples>;
+
+// equivalent of lookup_state in the old index
+// FIXME: forward-declare in vast/fwd.hpp
+// TODO: write docs
+struct query_state {
+  /// The UUID of the query.
+  vast::uuid id;
+
+  /// The query expression.
+  vast::expression expression;
+
+  /// The evaluators for this query
+  // std::set<caf::actor> evaluators;
+
+  /// Unscheduled partitions.
+  std::vector<uuid> partitions;
+
+  // Maps partition IDs to the EVALUATOR actors we are going to spawn.
+  pending_query_map pqm;
+
+  template <class Inspector>
+  friend auto inspect(Inspector& f, query_state& x) {
+    return f(caf::meta::type_name("query_state"), x.id, x.expression,
+             caf::meta::omittable_if_empty(), x.partitions,
+             caf::meta::omittable_if_empty(), x.pqm);
+  }
+};
+
 /// The state of the index actor.
 struct index_state {
+  // -- type aliases -----------------------------------------------------------
+
   using index_stream_stage_ptr
     = caf::stream_stage_ptr<table_slice_ptr,
                             caf::broadcast_downstream_manager<table_slice_ptr>>;
 
-  using pending_query_map = detail::stable_map<uuid, evaluation_triples>;
-
-  // equivalent of lookup_state in the old index
-  struct query_state {
-    /// The UUID of the query.
-    vast::uuid id;
-
-    /// The query expression.
-    vast::expression expression;
-
-    /// The evaluators for this query
-    // std::set<caf::actor> evaluators;
-
-    /// Unscheduled partitions.
-    std::vector<uuid> partitions;
-
-    // Maps partition IDs to the EVALUATOR actors we are going to spawn.
-    pending_query_map pqm;
-  };
-
-  /// Loads partitions from disk by UUID.
-  class partition_factory {
-  public:
-    explicit partition_factory(index_state* st = nullptr) : st_(st) {
-      // nop
-    }
-
-    caf::actor operator()(const uuid& id) const;
-
-  private:
-    index_state* st_;
-  };
-
-  /// Stores partitions sorted by access frequency.
-  using partition_cache_type
-    = detail::lru_cache<uuid, caf::actor, partition_factory>;
+  // -- constructor ------------------------------------------------------------
 
   explicit index_state(caf::stateful_actor<index_state>* self);
 
@@ -183,7 +198,7 @@ struct index_state {
   std::unordered_map<uuid, caf::actor> unpersisted;
 
   /// The set of passive (read-only) partitions.
-  partition_cache_type lru_partitions;
+  detail::lru_cache<uuid, caf::actor, partition_factory> lru_partitions;
 
   /// The set of partitions that exist on disk.
   /// TODO: not sure if we even need this
