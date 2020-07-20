@@ -30,6 +30,7 @@
 #include <caf/actor.hpp>
 #include <caf/behavior.hpp>
 #include <caf/fwd.hpp>
+#include <caf/meta/type_name.hpp>
 
 #include <unordered_map>
 #include <vector>
@@ -42,16 +43,44 @@ namespace v2 {
 
 /// The state of the active partition.
 struct active_partition_state {
-  caf::actor actor; ///< The partition actor.
+  /// The partition actor.
+  caf::actor actor;
 
   /// The slot ID that identifies the partition in the stream.
   caf::stream_slot stream_slot;
 
   /// The remaining free capacity of the partition.
-  uint64_t capacity;
+  size_t capacity;
 
   /// The UUID of the partition.
   uuid id;
+
+  template <class Inspector>
+  friend auto inspect(Inspector& f, active_partition_state& x) {
+    return f(caf::meta::type_name("active_partition_state"), x.actor,
+             x.stream_slot, x.capacity, x.id);
+  }
+};
+
+/// Accumulates statistics for a given layout.
+struct layout_statistics {
+  uint64_t count; ///< Number of events indexed.
+
+  template <class Inspector>
+  friend auto inspect(Inspector& f, layout_statistics& x) {
+    return f(caf::meta::type_name("layout_statistics"), x.count);
+  }
+};
+
+/// Accumulates statistics about indexed data.
+struct index_statistics {
+  /// The number of events for a given layout.
+  std::unordered_map<std::string, layout_statistics> layouts;
+
+  template <class Inspector>
+  friend auto inspect(Inspector& f, index_statistics& x) {
+    return f(caf::meta::type_name("index_statistics"), x.layouts);
+  }
 };
 
 /// The state of the index actor.
@@ -91,17 +120,6 @@ struct index_state {
 
   private:
     index_state* st_;
-  };
-
-  /// Accumulates statistics for a given layout.
-  struct layout_statistics {
-    uint64_t count; ///< Number of events indexed.
-  };
-
-  /// Accumulates statistics about indexed data.
-  struct statistics {
-    /// The number of events for a given layout.
-    std::unordered_map<std::string, layout_statistics> layouts;
   };
 
   /// Stores partitions sorted by access frequency.
@@ -192,22 +210,10 @@ struct index_state {
   path dir;
 
   /// Statistics about processed data.
-  statistics stats;
+  index_statistics stats;
 
   static inline const char* name = "index";
 };
-
-/// @relates index_state
-template <class Inspector>
-auto inspect(Inspector& f, index_state::layout_statistics& x) {
-  return f(x.count);
-}
-
-/// @relates index_state
-template <class Inspector>
-auto inspect(Inspector& f, index_state::statistics& x) {
-  return f(x.layouts);
-}
 
 /// Indexes events in horizontal partitions.
 /// @param dir The directory of the index.
