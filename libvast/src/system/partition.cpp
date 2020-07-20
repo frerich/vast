@@ -35,7 +35,6 @@
 #include "vast/save.hpp"
 #include "vast/system/filesystem.hpp"
 #include "vast/system/index.hpp"
-#include "vast/system/index_common.hpp"
 #include "vast/system/indexer_stage_driver.hpp"
 #include "vast/system/shutdown.hpp"
 #include "vast/system/spawn_indexer.hpp"

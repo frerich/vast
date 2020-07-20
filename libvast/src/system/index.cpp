@@ -44,7 +44,6 @@
 #include "vast/system/accountant.hpp"
 #include "vast/system/evaluator.hpp"
 #include "vast/system/filesystem.hpp"
-#include "vast/system/index_common.hpp"
 #include "vast/system/partition.hpp"
 #include "vast/system/query_supervisor.hpp"
 #include "vast/system/shutdown.hpp"
