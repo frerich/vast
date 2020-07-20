@@ -95,7 +95,7 @@ struct partition_state {
   std::string name;
 
   /// The first ID in the partition.
-  size_t offset;
+  id offset;
 
   /// The number of events in the partition.
   size_t events;

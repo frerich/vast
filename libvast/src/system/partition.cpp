@@ -55,7 +55,6 @@
 #include "caf/broadcast_downstream_manager.hpp"
 #include "caf/deserializer.hpp"
 #include "caf/sec.hpp"
-#include <bits/stdint-uintn.h>
 #include <flatbuffers/flatbuffers.h>
 
 using namespace std::chrono;
