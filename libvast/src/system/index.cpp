@@ -103,9 +103,7 @@ caf::error index_state::load_from_disk() {
   // this function is only once used during startup so it seems like
   // unnecessary
   if (!exists(dir)) {
-    // TODO: For `vast start` this should probably be INFO, but then its maybe
-    // too verbose for `vast -N`.
-    VAST_VERBOSE(self, "found no prior state, starting with clean slate");
+    VAST_INFO(self, "found no prior state, starting with clean slate");
     return caf::none;
   }
   // TODO: Move the `statistics` into the flatbuffer.
