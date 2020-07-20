@@ -72,13 +72,6 @@ using namespace std::chrono;
 //                                                                                ...
 // clang-format on
 
-CAF_BEGIN_TYPE_ID_BLOCK(idx, caf::first_custom_type_id + 20000)
-
-  CAF_ADD_ATOM(idx, idx::atom, expression_stage2, "xpr_stage2")
-  CAF_ADD_ATOM(idx, idx::atom, query_stage2, "qry_stage2")
-
-CAF_END_TYPE_ID_BLOCK(idx)
-
 namespace vast::system {
 
 namespace v2 {
@@ -516,17 +509,15 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       auto& inserted_lookup = result.first->second;
       st.request_query_map(inserted_lookup, st.taste_partitions);
       // "Yield" the current function.
-      self->delegate(caf::actor_cast<caf::actor>(self),
-                     idx::atom::expression_stage2_v, expr, inserted_lookup.id,
-                     client);
+      self->delegate(caf::actor_cast<caf::actor>(self), atom::resume_v, expr,
+                     inserted_lookup.id, client);
     },
     // The `.await()` handlers that are added to this actor in
     // `build_query_map()` are running as soon as the current coroutine is
     // suspended, so in between the above handler and the "stage2" handler
     // below. So the query map is filled with the responses from all the
     // selected partitions when we enter the function below.
-    [=](idx::atom::expression_stage2, vast::expression expr, uuid query_id,
-        caf::actor client) {
+    [=](atom::resume, vast::expression expr, uuid query_id, caf::actor client) {
       auto& st = self->state;
       // TODO: Can it happen that `st.pending[query_id]` was modified in between
       // the two steps?
@@ -590,11 +581,11 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
         return;
       }
       st.request_query_map(iter->second, num_partitions);
-      self->delegate(caf::actor_cast<caf::actor>(self),
-                     idx::atom::query_stage2_v, query_id, client);
+      self->delegate(caf::actor_cast<caf::actor>(self), atom::resume_v,
+                     query_id, client);
     },
     // See also comment above `expression_stage2` handler.
-    [=](idx::atom::query_stage2, uuid query_id, caf::actor client) {
+    [=](atom::resume, uuid query_id, caf::actor client) {
       auto& st = self->state;
       // TODO: Is it better to pass the uuid or the query_state that was looked
       // up in stage1 directly?
