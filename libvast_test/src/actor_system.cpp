@@ -31,8 +31,10 @@ test_configuration::test_configuration() {
 }
 
 caf::error test_configuration::parse(int argc, char** argv) {
-  set("logger.file-verbosity", caf::atom("trace"));
-  return caf::none;
+  auto err = super::parse(argc, argv);
+  if (!err)
+    set("logger.file-verbosity", caf::atom("trace"));
+  return err;
 }
 
 /// A fixture with an actor system that uses the default work-stealing
