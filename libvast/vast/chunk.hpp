@@ -25,14 +25,14 @@
 #include <caf/intrusive_ptr.hpp>
 #include <caf/ref_counted.hpp>
 
+#include <flatbuffers/flatbuffers.h>
+
 #include <cstddef>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
 #include <utility>
-
-#include <flatbuffers/flatbuffers.h>
 
 namespace vast {
 

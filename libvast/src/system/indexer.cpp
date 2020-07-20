@@ -37,9 +37,9 @@
 
 // #include "caf/serializer_impl.hpp"
 
-#include <new>
-
 #include <flatbuffers/flatbuffers.h>
+
+#include <new>
 
 namespace vast::system {
 

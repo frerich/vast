@@ -49,13 +49,14 @@
 #include <caf/make_counted.hpp>
 #include <caf/stateful_actor.hpp>
 
+#include <flatbuffers/flatbuffers.h>
+
 #include "caf/actor_system.hpp"
 #include "caf/binary_deserializer.hpp"
 #include "caf/binary_serializer.hpp"
 #include "caf/broadcast_downstream_manager.hpp"
 #include "caf/deserializer.hpp"
 #include "caf/sec.hpp"
-#include <flatbuffers/flatbuffers.h>
 
 using namespace std::chrono;
 using namespace caf;
