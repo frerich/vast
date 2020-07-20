@@ -178,13 +178,14 @@ void index_state::request_query_map(query_state& lookup,
   if (num_partitions == 0 || lookup.partitions.empty())
     return;
   // Prefer partitions that are already available in RAM.
+  auto partition_is_loaded = [&](const uuid& candidate) {
+    return (active_partition.actor != nullptr
+            && active_partition.id == candidate)
+           || unpersisted.count(candidate)
+           || lru_partitions.contains(candidate);
+  };
   std::partition(lookup.partitions.begin(), lookup.partitions.end(),
-                 [&](const uuid& candidate) {
-                   return (active_partition.actor != nullptr
-                           && active_partition.id == candidate)
-                          || unpersisted.count(candidate)
-                          || lru_partitions.contains(candidate);
-                 });
+                 partition_is_loaded);
   // Helper function to spin up EVALUATOR actors for a single partition.
   auto spin_up = [&](const uuid& partition_id) {
     // We need to first check whether the ID is the active partition or one
