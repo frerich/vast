@@ -255,12 +255,12 @@ index_state::launch_evaluators(pending_query_map pqm, expression expr) {
   return result;
 }
 
-path index_state::statistics_filename() const {
-  return dir / "statistics";
+path index_state::statistics_filename(path basename) const {
+  return basename / dir / "statistics";
 }
 
-path index_state::index_filename() const {
-  return dir / "index.bin";
+path index_state::index_filename(path basename) const {
+  return basename / dir / "index.bin";
 }
 
 // FIXME: Move this code into a function `pack(builder, index)`.

@@ -134,10 +134,9 @@ struct index_state {
 
   caf::error flush_to_disk();
 
-  // FIXME: Change these so they take `path` as basename.
-  path index_filename() const;
+  path index_filename(path basename = {}) const;
 
-  path statistics_filename() const;
+  path statistics_filename(path basename = {}) const;
 
   caf::error flush_index();
 
