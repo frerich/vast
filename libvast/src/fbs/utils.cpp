@@ -19,6 +19,7 @@
 namespace vast::fbs {
 
 chunk_ptr release(flatbuffers::FlatBufferBuilder& builder) {
+  // VAST_ASSERT(builder.Finished());
   size_t offset;
   size_t size;
   auto ptr = builder.ReleaseRaw(size, offset);
@@ -39,6 +40,7 @@ caf::error check_version(Version given, Version expected) {
 }
 
 span<const byte> as_bytes(const flatbuffers::FlatBufferBuilder& builder) {
+  // VAST_ASSERT(builder.Finished());
   auto data = reinterpret_cast<const byte*>(builder.GetBufferPointer());
   auto size = builder.GetSize();
   return {data, size};

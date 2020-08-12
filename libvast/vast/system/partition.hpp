@@ -20,6 +20,7 @@
 #include "vast/ids.hpp"
 #include "vast/qualified_record_field.hpp"
 #include "vast/system/instrumentation.hpp"
+#include "vast/system/filesystem.hpp"
 #include "vast/table_slice_column.hpp"
 #include "vast/type.hpp"
 #include "vast/uuid.hpp"
@@ -100,7 +101,8 @@ struct partition_state {
   /// The number of events in the partition.
   size_t events;
 
-  /// Peristence-related state
+  /// Persistence-related state
+  filesystem_type fs_actor;
   caf::response_promise persistence_promise;
   std::optional<path> persist_path;
   size_t persisted_indexers;
@@ -110,7 +112,7 @@ struct partition_state {
 // TODO: Split this into a `static data` part that can be mmap'ed
 // straight from disk, and an actor-related part. In the ideal case,
 // we want to eventually be able to use the on-disk state without
-// any intermediate deserialzation step, like yandex::mms or cap'n proto.
+// any intermediate deserialization step, like yandex::mms or cap'n proto.
 struct readonly_partition_state {
   // FIXME: Move these functions, together with `combined_layout` and
   caf::actor indexer_at(size_t position);
@@ -143,14 +145,13 @@ struct readonly_partition_state {
   size_t events;
 
   // Stores the deserialized indexers.
-  // FIXME: `value_index*` is just a placeholder, use the correct type.
-  std::map<qualified_record_field, value_index*> indexer_states;
+  std::map<qualified_record_field, value_index_ptr> indexer_states;
 
   /// Maps qualified fields to indexer actors.
   detail::stable_map<qualified_record_field, caf::actor> indexers;
 };
 
-// flatbuffer support
+// Flatbuffer support
 
 caf::expected<flatbuffers::Offset<fbs::Partition>>
 pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);

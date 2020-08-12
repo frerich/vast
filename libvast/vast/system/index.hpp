@@ -17,6 +17,7 @@
 #include "vast/detail/lru_cache.hpp"
 #include "vast/detail/stable_map.hpp"
 #include "vast/expression.hpp"
+#include "vast/fbs/index.hpp"
 #include "vast/filesystem.hpp"
 #include "vast/fwd.hpp"
 #include "vast/meta_index.hpp"
@@ -147,6 +148,8 @@ struct index_state {
 
   caf::error load_from_disk();
 
+  // void init(const vast::fbs::Index& index);
+
   caf::error flush_to_disk();
 
   path index_filename(path basename = {}) const;
@@ -197,11 +200,10 @@ struct index_state {
   /// unpin them after they're safely on disk.
   std::unordered_map<uuid, caf::actor> unpersisted;
 
-  /// The set of passive (read-only) partitions.
+  /// The set of passive (read-only) partitions currently loaded into memory.
   detail::lru_cache<uuid, caf::actor, partition_factory> lru_partitions;
 
   /// The set of partitions that exist on disk.
-  /// TODO: not sure if we even need this
   std::vector<uuid> persisted_partitions;
 
   /// The maximum number of events that a partition can hold.
@@ -228,6 +230,13 @@ struct index_state {
 
   static inline const char* name = "index";
 };
+
+/// Flatbuffer integration. Note that this is only one-way, restoring
+/// the index state needs additional runtime information.
+// TODO: Pull out the persisted part of the state into a separate struct
+// that can be packed and unpacked.
+caf::expected<flatbuffers::Offset<fbs::Index>>
+pack(flatbuffers::FlatBufferBuilder& builder, const index_state& x);
 
 /// Indexes events in horizontal partitions.
 /// @param dir The directory of the index.

@@ -19,6 +19,7 @@ table QualifiedValueIndex {
 }
 
 /// The persistent state of the meta index.
+//  TODO: Add a `Version` field.
 table Partition {
   /// The UUID of this partition.
   uuid: UUID;

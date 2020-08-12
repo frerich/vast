@@ -99,9 +99,8 @@ index_state::index_state(caf::stateful_actor<index_state>* self)
 }
 
 caf::error index_state::load_from_disk() {
-  // TODO: Not sure if we should already use the filesystem actor here,
-  // this function is only once used during startup so it seems like
-  // unnecessary
+  // We dont use the filesystem actor here because this function is only
+  // called once during startup, when no other actors exist yet.
   if (!exists(dir)) {
     VAST_INFO(self, "found no prior state, starting with clean slate");
     return caf::none;
@@ -129,7 +128,7 @@ caf::error index_state::load_from_disk() {
     auto version = index->version();
     if (version != fbs::Version::v0) {
       vast::die("unsupported index version, either remove the existing vast.db "
-                "or try again with a newer version of VAST");
+                "directory or try again with a newer version of VAST");
     }
     auto meta_idx = index->meta_index();
     VAST_ASSERT(meta_idx);
@@ -142,9 +141,6 @@ caf::error index_state::load_from_disk() {
       vast::uuid partition_uuid;
       unpack(*uuid_fb, partition_uuid);
       VAST_INFO(self, "unpacked", partition_uuid);
-      // FIXME: Check if the partition with that uuid actually exists on disk,
-      // and throw it out with a warning if not. (this can easily happen e.g.
-      // with a hard shutdown)
       if (exists(dir / to_string(partition_uuid)))
         persisted_partitions.push_back(partition_uuid);
       else
@@ -263,15 +259,14 @@ path index_state::index_filename(path basename) const {
   return basename / dir / "index.bin";
 }
 
-// FIXME: Move this code into a function `pack(builder, index)`.
-caf::error index_state::flush_index() {
-  flatbuffers::FlatBufferBuilder builder;
-  auto meta_idx = pack(builder, self->state.meta_idx);
+caf::expected<flatbuffers::Offset<fbs::Index>>
+pack(flatbuffers::FlatBufferBuilder& builder, const index_state& state) {
+  auto meta_idx = pack(builder, state.meta_idx);
   std::vector<flatbuffers::Offset<fbs::UUID>> partition_uuids;
-  VAST_INFO(self, "persisting", persisted_partitions.size(),
-            " definitely persisted and ", unpersisted.size(),
+  VAST_INFO(state.self, "persisting", state.persisted_partitions.size(),
+            " definitely persisted and ", state.unpersisted.size(),
             " maybe persisted partitions uuids");
-  for (auto uuid : persisted_partitions) {
+  for (auto uuid : state.persisted_partitions) {
     auto uuid_fb = pack(builder, uuid);
     if (!uuid_fb)
       return uuid_fb.error();
@@ -281,7 +276,7 @@ caf::error index_state::flush_index() {
   // of the system is shut down (in case of a hard/dirty shutdown), so we just
   // store everything and throw out the missing partitions when loading the
   // index.
-  for (auto& kv : unpersisted) {
+  for (auto& kv : state.unpersisted) {
     auto uuid_fb = pack(builder, kv.first);
     if (!uuid_fb)
       return uuid_fb.error();
@@ -294,9 +289,15 @@ caf::error index_state::flush_index() {
   index_builder.add_version(fbs::Version::v0);
   index_builder.add_meta_index(*meta_idx);
   index_builder.add_partitions(partitions);
-  auto index = index_builder.Finish();
-  // FIME: Move the file identifier (VAST) into a dedicated constant.
-  builder.Finish(index, "VAST");
+  return index_builder.Finish();
+}
+
+caf::error index_state::flush_index() {
+  flatbuffers::FlatBufferBuilder builder;
+  auto index = pack(builder, *this);
+  if (!index)
+    return index.error();
+  builder.Finish(*index, vast::fbs::file_identifier);
   auto span = vast::span<const byte>{
     reinterpret_cast<const byte*>(builder.GetBufferPointer()),
     builder.GetSize()};

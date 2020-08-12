@@ -78,8 +78,8 @@ caf::actor indexer_at(const PartitionState& state, size_t position) {
 
 template <typename PartitionState>
 caf::actor fetch_indexer(const PartitionState& state, const data_extractor& dx,
-                         [[maybe_unused]] relational_operator op,
-                         [[maybe_unused]] const data& x) {
+                         relational_operator op,
+                         const data& x) {
   VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
   // Sanity check.
   if (dx.offset.empty())
@@ -166,12 +166,17 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
     return uuid.error();
   std::vector<flatbuffers::Offset<fbs::QualifiedValueIndex>> indices;
   for (const auto& kv : x.chunks) {
+    auto actor_id = kv.first;
     auto chunk = kv.second;
     // TODO: Can we somehow get rid of this copy?
     auto data = builder.CreateVector(
       reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
-    auto type = builder.CreateString("FIXME: dummy_type");
-    auto fqf = builder.CreateString("FIXME: dummy_qualified_fieldname");
+    using pair = decltype(x.indexers)::value_type;
+    auto it = std::find_if(x.indexers.begin(), x.indexers.end(), [&](const pair& kv) {
+      return kv.second.id() == actor_id;
+    });
+    auto type = builder.CreateString("ValueIndex"); // TODO: read this from the actual type of the indexer
+    auto fqf = builder.CreateString(it->first.field_name); // FIXME: Do we need `.fqn()` here instead?
     fbs::ValueIndexBuilder vbuilder(builder);
     vbuilder.add_type(type);
     vbuilder.add_data(data);
@@ -195,7 +200,6 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
   auto combined_layout = builder.CreateVector(
     reinterpret_cast<const uint8_t*>(layout_chunk->data()),
     layout_chunk->size());
-  // auto layouts = ...; // FIXME
   fbs::PartitionBuilder partition_builder(builder);
   partition_builder.add_uuid(*uuid);
   partition_builder.add_offset(x.offset);
@@ -208,7 +212,6 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
 caf::error
 unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   // Check that all fields exist.
-  // TODO: We should also add a `Version` fields to the partitions.
   if (!partition.uuid())
     return make_error(ec::format_error, "missing 'uuid' field in partition "
                                         "flatbuffer");
@@ -220,30 +223,44 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   if (!indexes)
     return make_error(ec::format_error, "missing 'indexes' field in partition "
                                         "flatbuffer");
+  for (auto qualified_index : *indexes) {
+    if (!qualified_index->qualified_field_name())
+      return make_error(ec::format_error, "missing field name in qualified index");
+    auto index = qualified_index->index();
+    if (!index)
+      return make_error(ec::format_error, "missing index name in qualified index");
+    if (!index->type())
+      return make_error(ec::format_error, "missing type in index");
+    if (!index->data())
+      return make_error(ec::format_error, "missing data in index");
+    if (index->type()->str() != "ValueIndex")
+      return make_error(ec::format_error, "unknown index type in flatbuffer");
+  }
   unpack(*partition.uuid(), state.partition_uuid);
   state.events = partition.events();
   state.offset = partition.offset();
-  caf::binary_deserializer bs(
-    state.self->system(),
+  caf::binary_deserializer bds(
+    nullptr,
     reinterpret_cast<const char*>(combined_layout->data()),
     combined_layout->size());
-  bs >> state.combined_layout;
-  for (auto qualified_index : *indexes) {
-    // FIXME: Check that all fields exist (ideally in a separate pass before we
-    // start deserializing anything)
-    auto fqf = qualified_index->qualified_field_name();
+  bds >> state.combined_layout;
+  if (state.combined_layout.fields.size() != indexes->size())
+    return make_error(ec::format_error, "incoherent number of indexers");
+  // We rely on the indexes being stored in the same order as the layout fields.
+  for (size_t i = 0; i < indexes->size(); ++i) {
+    auto qualified_index = indexes->Get(i);
+    auto field = state.combined_layout.fields.at(i);    
+    //
+    auto qf = qualified_record_field{qualified_index->qualified_field_name()->str(), field};
     auto index = qualified_index->index();
-    auto type = index->type();
     auto data = index->data();
-    caf::binary_deserializer bs(state.self->system(),
+    auto& vindex_ptr = state.indexer_states[qf];
+    caf::binary_deserializer bds(nullptr,
                                 reinterpret_cast<const char*>(data->data()),
                                 data->size());
-    // FIXME:
-    // switch (type) {
-    // case ValueIndex:
-    //   ...
-    // }
+    bds >> vindex_ptr;
   }
+  VAST_VERBOSE_ANON("restored", state.indexer_states.size(), "indexers for partition", state.partition_uuid);
   return caf::none;
 }
 
@@ -253,6 +270,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->state.partition_uuid = id;
   self->state.offset = vast::invalid_id;
   self->state.events = 0;
+  auto actor = self->system().registry().get(atom::filesystem_v);
+  // FIXME: Pass the actor as an argument to `partition()` instead.
+  if (!actor)
+    die("could not find filesystem actor in registry");
+  self->state.fs_actor = caf::actor_cast<filesystem_type>(actor);
   // stream stage input: table_slice_ptr
   // stream stage output: table_slice_column
   self->state.stage = caf::attach_continuous_stream_stage(
@@ -263,7 +285,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     [=](caf::unit_t&, caf::downstream<table_slice_column>& out,
         table_slice_ptr x) {
       VAST_DEBUG(self, "got new table slice", to_string(*x));
-      // We rely on `invalid_id` being actually being the highest possible id
+      // We rely on `invalid_id` actually being the highest possible id
       // when using `min()` below.
       VAST_ASSERT(vast::invalid_id == std::numeric_limits<vast::id>::max());
       auto first = x->offset();
@@ -334,6 +356,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       return self->state.stage->add_inbound_path(in);
     },
     [=](atom::persist, const path& part_dir) {
+      std::cerr << "got persist atom" << std::endl;
       auto& st = self->state;
       // Using `source()` to check if the promise was already initialized.
       if (!st.persistence_promise.source())
@@ -347,14 +370,17 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       // complicated.
       if (!self->state.stage->idle()) {
         VAST_INFO(self, "waiting for stream before persisting");
+        std::cerr << "waiting for stream before persisting" << std::endl;;
         self->delayed_send(self, 50ms, atom::persist_v, part_dir);
-        return;
+        return st.persistence_promise;
       }
       VAST_INFO(self, "sending `snapshot` to indexers");
+      std::cerr << "sending `snapshot` to indexers" << std::endl;;
       for (auto& kv : st.indexers) {
         self->send(kv.second, atom::snapshot_v,
                    caf::actor_cast<caf::actor>(self));
       }
+      return st.persistence_promise;
     },
     [=](atom::done, vast::chunk_ptr chunk) {
       ++self->state.persisted_indexers;
@@ -367,11 +393,15 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       }
       auto sender = self->current_sender()->id();
       VAST_INFO(self, "got chunk from", sender); // FIXME: info -> debug
+      std::cerr <<  "got chunk from" << sender << std::endl;
+
       // TODO: We technically dont need the `state.chunks` map, we can just put
       // the builder in the state and add new chunks as they arrive.
       self->state.chunks.emplace(sender, chunk);
-      if (self->state.persisted_indexers < self->state.indexers.size())
+      if (self->state.persisted_indexers < self->state.indexers.size()) {
+        std::cerr << "waiting for more chunks\n";
         return;
+      }
       flatbuffers::FlatBufferBuilder builder;
       auto partition = pack(builder, self->state);
       if (!partition) {
@@ -380,14 +410,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       }
       builder.Finish(*partition);
       // Delegate I/O to filesystem actor.
-      // TODO: Store the actor handle in `state`.
-      auto actor = self->system().registry().get(atom::filesystem_v);
-      if (!actor) {
-        VAST_ERROR(self, "cannot persist state; filesystem actor is "
-                         "already down");
-        return; // FIXME: send error message
-      }
-      auto fs = caf::actor_cast<filesystem_type>(actor);
       VAST_ASSERT(self->state.persist_path);
       auto fb = builder.Release();
       // TODO: This is duplicating code from one of the `chunk` constructors,
@@ -398,8 +420,10 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
       VAST_VERBOSE(self, "persisting partition with total size", ys->size(),
                    "bytes");
+      std::cerr << "persisting partition with total size " << ys->size() << " bytes\n";
+      std::cerr << "response will go to " << caf::to_string(self->state.persistence_promise.next()) << std::endl;
       self->state.persistence_promise.delegate(
-        fs, atom::write_v, *self->state.persist_path, fbchunk);
+        self->state.fs_actor, atom::write_v, *self->state.persist_path, fbchunk);
       return; // FIXME: send error message
     },
     [=](atom::evaluate, const expression& expr) {
@@ -442,8 +466,16 @@ readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
                    vast::chunk chunk) {
   auto partition = fbs::GetPartition(chunk.data());
   auto error = unpack(*partition, self->state);
+  if (error) {
+    VAST_ERROR("error unpacking partition", error);
+  }
   VAST_ASSERT(!error); // FIXME: Proper error handling.
   VAST_ASSERT(id == self->state.partition_uuid);
+  for (auto& kv : self->state.indexer_states) {
+    auto field = kv.first;
+    // FIXME: Do we also need to persist some of the settings?
+    self->state.indexers[field] = self->spawn(indexer, field.type, caf::settings{});
+  }
   return {
     [=](caf::stream<table_slice_ptr>) {
       VAST_ASSERT(!"read-only partition can not receive new table slices");
