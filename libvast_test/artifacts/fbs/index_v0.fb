@@ -1,0 +1,3 @@
+# This is a placeholder for a flatbuffer representation of a v0 index,
+# to be loaded in unit tests so we can verify that we're still able to
+# load v0 data files.
