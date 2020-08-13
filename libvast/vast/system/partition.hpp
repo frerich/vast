@@ -124,7 +124,7 @@ struct readonly_partition_state {
                            relational_operator op, const data& x);
 
   /// Pointer to the parent actor.
-  caf::stateful_actor<partition_state>* self;
+  caf::stateful_actor<readonly_partition_state>* self;
 
   /// Uniquely identifies this partition.
   uuid partition_uuid;

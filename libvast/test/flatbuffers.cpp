@@ -142,13 +142,14 @@ TEST(empty partition roundtrip) {
   CHECK_EQUAL(readonly_state.name, state.name);
 }
 
-FIXTURE_SCOPE(foo, fixtures::deterministic_actor_system_and_events)
+FIXTURE_SCOPE(foo, fixtures::deterministic_actor_system)
 
 TEST(full partition roundtrip) {
-  caf::scoped_actor actor(sys);
-  auto fs = self->spawn<caf::detached>(vast::system::posix_filesystem, directory); // `directory` is provided by the unit test fixture
+  // caf::scoped_actor actor(sys);
+  auto fs = self->spawn(vast::system::posix_filesystem, directory); // `directory` is provided by the unit test fixture
   sys.registry().put(vast::atom::filesystem_v, fs); 
   auto partition_uuid = vast::uuid::random();
+
   auto partition = sys.spawn(vast::system::v2::partition, partition_uuid);
   run();
   REQUIRE(partition);
@@ -157,55 +158,71 @@ TEST(full partition roundtrip) {
   CHECK(builder.add(0u));
   auto slice = builder.finish();
   auto data = std::vector<vast::table_slice_ptr> {slice};
-  vast::detail::spawn_container_source(sys, data, partition);
+
+  auto src = vast::detail::spawn_container_source(sys, data, partition);
+  REQUIRE(src);
   run();
+  self->send_exit(src, caf::exit_reason::user_shutdown);
+
   // Persist the partition to disk;
   vast::path persist_path = "test-partition"; // will be interpreted relative to the fs actor's root dir
   // The standard `request/receive` leads to a deadlock here, not sure why but maybe some weird interaction
   // between blocking actors and response promises.
-  actor->send(partition, vast::atom::persist_v, persist_path);
+  self->send(partition, vast::atom::persist_v, persist_path);
   run();
-  actor->receive(
+  self->receive(
     [](vast::atom::ok) { CHECK("persisting done"); },
     [](caf::error err) { FAIL(err); });
   // Shut down partition.
-  actor->send(partition, caf::error{});
+  self->send_exit(partition, caf::exit_reason::user_shutdown);
+
   // Read persisted state from disk.
   vast::chunk_ptr chunk;
-  actor->request(caf::actor_cast<vast::system::filesystem_type>(fs), caf::infinite, vast::atom::read_v, persist_path)
-    .receive(
+  // self->request(caf::actor_cast<vast::system::filesystem_type>(fs), caf::infinite, vast::atom::read_v, persist_path)
+  self->send(caf::actor_cast<vast::system::filesystem_type>(fs), vast::atom::read_v, persist_path);
+  run();
+  self->receive(
       [&](const vast::chunk_ptr& chk) {
         CHECK(chk);
         chunk = chk;
       },
       [&](const caf::error& err) { FAIL(err); });
   run();
+
   // Spawn a read-only partition from this chunk and try to query the data we added.
   // We make two queries, one "#type"-query and one "normal" query
   auto readonly_partition = sys.spawn(vast::system::v2::readonly_partition, partition_uuid, *chunk);
   REQUIRE(readonly_partition);
   // FIXME: This has the same weird deadlock when using request/receive, should probably be investigated.
   run();
-  actor->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}});
+
+  self->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}});
   run();
-  actor->receive(
-    [](vast::evaluation_triples t) { CHECK_EQUAL(t.size(), 1u); },
+  self->receive(
+    [&](vast::evaluation_triples triples) {
+      CHECK_EQUAL(triples.size(), 1u);
+    },
     [](caf::error) { CHECK(false); });
-  actor->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{23u}}});
+
+  // TODO: We should follow up with the indexers contained in the triples, and confirm they return the correct `ids`.
+
+  self->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{23u}}});
   run();
-  actor->receive(
-    [](vast::evaluation_triples t) { CHECK_EQUAL(t.size(), 0u); },
-    [](caf::error) { CHECK(false); });
-  run();
-  actor->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"y.x"}}});
-  run();
-  actor->receive(
-    [](vast::evaluation_triples t) { CHECK_EQUAL(t.size(), 1u); },
+  self->receive(
+    [&](vast::evaluation_triples triples) {
+      CHECK_EQUAL(triples.size(), 1u); 
+    },
     [](caf::error) { CHECK(false); });
   run();
   // Shut down readonly_partition actor.
+
   CHECK(true);
-  actor->send(readonly_partition, caf::error{});
+
+  self->send_exit(readonly_partition, caf::exit_reason::user_shutdown);
+  run();
+
+  self->send_exit(fs, caf::exit_reason::user_shutdown);
+  run();
 }
 
 FIXTURE_SCOPE_END()

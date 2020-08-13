@@ -110,6 +110,7 @@ fetch_indexer(const PartitionState& state, const attribute_extractor& ex,
         row_ids |= ids;
     // TODO: Spawning a one-shot actor is quite expensive. Maybe the
     //       partition could instead maintain this actor lazily.
+    std::cerr << "self is " << state.self << std::endl;
     return state.self->spawn([row_ids]() -> caf::behavior {
       return [=](const curried_predicate&) { return row_ids; };
     });
@@ -348,6 +349,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     auto indexers = std::vector<caf::actor>{};
     for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
       indexers.push_back(idx);
+    self->state.indexers.clear();
     shutdown<policy::parallel>(self, std::move(indexers));
   });
   return {
@@ -356,7 +358,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       return self->state.stage->add_inbound_path(in);
     },
     [=](atom::persist, const path& part_dir) {
-      std::cerr << "got persist atom" << std::endl;
       auto& st = self->state;
       // Using `source()` to check if the promise was already initialized.
       if (!st.persistence_promise.source())
@@ -370,12 +371,10 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       // complicated.
       if (!self->state.stage->idle()) {
         VAST_INFO(self, "waiting for stream before persisting");
-        std::cerr << "waiting for stream before persisting" << std::endl;;
         self->delayed_send(self, 50ms, atom::persist_v, part_dir);
         return st.persistence_promise;
       }
       VAST_INFO(self, "sending `snapshot` to indexers");
-      std::cerr << "sending `snapshot` to indexers" << std::endl;;
       for (auto& kv : st.indexers) {
         self->send(kv.second, atom::snapshot_v,
                    caf::actor_cast<caf::actor>(self));
@@ -393,13 +392,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       }
       auto sender = self->current_sender()->id();
       VAST_INFO(self, "got chunk from", sender); // FIXME: info -> debug
-      std::cerr <<  "got chunk from" << sender << std::endl;
-
       // TODO: We technically dont need the `state.chunks` map, we can just put
       // the builder in the state and add new chunks as they arrive.
       self->state.chunks.emplace(sender, chunk);
       if (self->state.persisted_indexers < self->state.indexers.size()) {
-        std::cerr << "waiting for more chunks\n";
+        VAST_DEBUG(self, "waiting for more chunks");
         return;
       }
       flatbuffers::FlatBufferBuilder builder;
@@ -420,8 +417,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
       VAST_VERBOSE(self, "persisting partition with total size", ys->size(),
                    "bytes");
-      std::cerr << "persisting partition with total size " << ys->size() << " bytes\n";
-      std::cerr << "response will go to " << caf::to_string(self->state.persistence_promise.next()) << std::endl;
       self->state.persistence_promise.delegate(
         self->state.fs_actor, atom::write_v, *self->state.persist_path, fbchunk);
       return; // FIXME: send error message
@@ -464,18 +459,31 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
 caf::behavior
 readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
                    vast::chunk chunk) {
+  self->state.self = self;
   auto partition = fbs::GetPartition(chunk.data());
+  // FIXME: Proper error handling.
+  if (!partition)
+    VAST_ERROR(self, "chunk did not contain valid partition flatbuffer");
   auto error = unpack(*partition, self->state);
-  if (error) {
-    VAST_ERROR("error unpacking partition", error);
-  }
-  VAST_ASSERT(!error); // FIXME: Proper error handling.
+  if (error)
+    VAST_ERROR(self, "error unpacking partition", error);
+  VAST_ASSERT(!error);
   VAST_ASSERT(id == self->state.partition_uuid);
   for (auto& kv : self->state.indexer_states) {
     auto field = kv.first;
     // FIXME: Do we also need to persist some of the settings?
     self->state.indexers[field] = self->spawn(indexer, field.type, caf::settings{});
   }
+  self->set_exit_handler([=](const caf::exit_msg& msg) {
+    std::cerr << "got error message" << std::endl;
+        VAST_DEBUG(self, "received EXIT from", msg.source,
+               "with reason:", msg.reason);
+    auto indexers = std::vector<caf::actor>{};
+    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
+      indexers.push_back(idx);
+    // FIXME: Use `terminate()` here to avoid killing the process.
+    shutdown<policy::parallel>(self, std::move(indexers));
+  });
   return {
     [=](caf::stream<table_slice_ptr>) {
       VAST_ASSERT(!"read-only partition can not receive new table slices");
