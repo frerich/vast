@@ -145,6 +145,8 @@ struct readonly_partition_state {
   size_t events;
 
   // Stores the deserialized indexers.
+  // TODO: Remove this map again, as this is only temporary state - ultimately
+  // the indexer actors themselves should hold the pointers.
   std::map<qualified_record_field, value_index_ptr> indexer_states;
 
   /// Maps qualified fields to indexer actors.

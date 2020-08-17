@@ -15,6 +15,7 @@
 
 #include "vast/base.hpp"
 #include "vast/defaults.hpp"
+#include "vast/logger.hpp"
 
 #include <caf/settings.hpp>
 

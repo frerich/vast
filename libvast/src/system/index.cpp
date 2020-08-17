@@ -503,7 +503,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       auto query_id = uuid::random();
       auto lookup = query_state{query_id, expr, std::move(candidates),
                                 pending_query_map{}};
-      auto result = st.pending.emplace(lookup.id, std::move(lookup));
+      auto result = st.pending.emplace(query_id, std::move(lookup));
       VAST_ASSERT(result.second);
       auto& inserted_lookup = result.first->second;
       st.request_query_map(inserted_lookup, st.taste_partitions);
@@ -513,7 +513,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     },
     // The `.await()` handlers that are added to this actor in
     // `build_query_map()` are running as soon as the current coroutine is
-    // suspended, so in between the above handler and the "stage2" handler
+    // suspended, so in between the above handler and the "resume" handler
     // below. So the query map is filled with the responses from all the
     // selected partitions when we enter the function below.
     [=](atom::resume, vast::expression expr, uuid query_id, caf::actor client) {
@@ -586,9 +586,12 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     // See also comment above `expression_stage2` handler.
     [=](atom::resume, uuid query_id, caf::actor client) {
       auto& st = self->state;
-      // TODO: Is it better to pass the uuid or the query_state that was looked
-      // up in stage1 directly?
       auto iter = st.pending.find(query_id);
+      if (iter == st.pending.end()) {
+        VAST_ERROR(self, "ignoring continuation for unknown query", query_id);
+        self->send(client, atom::done_v); // FIXME: send caf::error instead
+        return;
+      }
       auto& pqm = iter->second.pqm;
       if (pqm.empty()) {
         VAST_ASSERT(iter->second.partitions.empty());

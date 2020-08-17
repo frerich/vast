@@ -260,6 +260,8 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
                                 reinterpret_cast<const char*>(data->data()),
                                 data->size());
     bds >> vindex_ptr;
+    if (bds.remaining() > 0)
+      return make_error(ec::format_error, "not all bytes used for value index");
   }
   VAST_VERBOSE_ANON("restored", state.indexer_states.size(), "indexers for partition", state.partition_uuid);
   return caf::none;
@@ -472,7 +474,7 @@ readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
   for (auto& kv : self->state.indexer_states) {
     auto field = kv.first;
     // FIXME: Do we also need to persist some of the settings?
-    self->state.indexers[field] = self->spawn(indexer, field.type, caf::settings{});
+    self->state.indexers[field] = self->spawn(readonly_indexer, std::move(kv.second), caf::settings{});
   }
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     std::cerr << "got error message" << std::endl;

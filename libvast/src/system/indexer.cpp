@@ -34,6 +34,7 @@
 #include <caf/attach_stream_sink.hpp>
 
 #include "caf/binary_serializer.hpp"
+#include "caf/stateful_actor.hpp"
 
 // #include "caf/serializer_impl.hpp"
 
@@ -44,6 +45,28 @@
 namespace vast::system {
 
 namespace v2 {
+
+// FIXME: Make a pass to see which options need to be set at indexer creation time and which at runtime. 
+caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self, value_index_ptr idx, caf::settings)
+{
+  self->state.name = "indexer-" + to_string(idx->type());
+  self->state.idx = std::move(idx);
+  return {
+    [=](caf::stream<table_slice_column>) {
+      VAST_ASSERT(!"received incoming stream as read-only indexer");
+    },
+    [=](atom::snapshot, caf::actor) {
+      VAST_ASSERT(!"received snapshot request as read-only actor");
+    },
+    [=](const curried_predicate& pred) {
+      VAST_DEBUG(self, "got predicate:", pred);
+      return self->state.idx->lookup(pred.op, make_view(pred.rhs));
+    },
+    [=](atom::shutdown) {
+      self->quit(caf::exit_reason::user_shutdown);
+    },
+  };
+}
 
 caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
                       caf::settings index_opts) {

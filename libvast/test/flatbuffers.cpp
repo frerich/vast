@@ -17,6 +17,7 @@
 #include "vast/fbs/index.hpp"
 #include "vast/fbs/utils.hpp"
 #include "vast/fbs/uuid.hpp"
+#include "vast/fwd.hpp"
 #include "vast/meta_index.hpp"
 #include "vast/msgpack_table_slice.hpp"
 #include "vast/msgpack_table_slice_builder.hpp"
@@ -178,49 +179,58 @@ TEST(full partition roundtrip) {
 
   // Read persisted state from disk.
   vast::chunk_ptr chunk;
-  // self->request(caf::actor_cast<vast::system::filesystem_type>(fs), caf::infinite, vast::atom::read_v, persist_path)
-  self->send(caf::actor_cast<vast::system::filesystem_type>(fs), vast::atom::read_v, persist_path);
+  auto read_promise = self->request(caf::actor_cast<vast::system::filesystem_type>(fs), caf::infinite, vast::atom::read_v, persist_path);
   run();
-  self->receive(
+  read_promise.receive(
       [&](const vast::chunk_ptr& chk) {
         CHECK(chk);
         chunk = chk;
       },
       [&](const caf::error& err) { FAIL(err); });
-  run();
 
   // Spawn a read-only partition from this chunk and try to query the data we added.
   // We make two queries, one "#type"-query and one "normal" query
   auto readonly_partition = sys.spawn(vast::system::v2::readonly_partition, partition_uuid, *chunk);
   REQUIRE(readonly_partition);
-  // FIXME: This has the same weird deadlock when using request/receive, should probably be investigated.
   run();
-
-  self->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}});
-  run();
-  self->receive(
-    [&](vast::evaluation_triples triples) {
-      CHECK_EQUAL(triples.size(), 1u);
+  auto test_expression = [&](const vast::expression& expression, size_t expected_partitions, size_t expected_ids) {
+    auto rp = self->request(readonly_partition, caf::infinite, vast::atom::evaluate_v, expression);
+    run();
+    rp.receive(
+      [&](vast::evaluation_triples triples) {
+      CHECK_EQUAL(triples.size(), expected_partitions);
+      for (auto triple : triples) {
+        auto curried_predicate = get<1>(triple);
+        auto actor = get<2>(triple);
+        CHECK(actor);
+        auto rp = self->request(actor, caf::infinite, curried_predicate);
+        run();
+        rp.receive(
+          [&](vast::ids ids) { 
+            CHECK_EQUAL(rank(ids), expected_ids);
+            for (auto id : select(ids)) {
+              std::cerr << "got id" << id << std::endl;
+            }
+          },
+          [](caf::error) { CHECK(false); });
+      }
     },
     [](caf::error) { CHECK(false); });
-
-  // TODO: We should follow up with the indexers contained in the triples, and confirm they return the correct `ids`.
-
-  self->send(readonly_partition, vast::atom::evaluate_v, vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{23u}}});
-  run();
-  self->receive(
-    [&](vast::evaluation_triples triples) {
-      CHECK_EQUAL(triples.size(), 1u); 
-    },
-    [](caf::error) { CHECK(false); });
-  run();
-  // Shut down readonly_partition actor.
-
-  CHECK(true);
-
+  };
+  auto x_equals_zero = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}};
+  auto x_equals_one = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{1u}}};
+  auto type_equals_x = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"x"}}};
+  auto type_equals_y = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"y"}}};
+  // // For the query `x == 0`, we expect one partition candidate partition and one result.
+  test_expression(x_equals_zero, 1, 1);
+  // // For the query `x == 1`, we expect one candidate partition and zero results.
+  test_expression(x_equals_one, 1, 0);
+  // // For the query `#type == "x"`, we expect one candidate partition and one result.
+  test_expression(type_equals_x, 1, 1);
+  // // For the query `#type == "y"`, we expect no candidate partitions.
+  test_expression(type_equals_y, 0, 0);
+  // Shut down test actors.
   self->send_exit(readonly_partition, caf::exit_reason::user_shutdown);
-  run();
-
   self->send_exit(fs, caf::exit_reason::user_shutdown);
   run();
 }
