@@ -43,6 +43,7 @@ class lru_cache {
 public:
   using key_value_pair = std::pair<Key, Value>;
   using list_iterator = typename std::list<key_value_pair>::iterator;
+  using const_list_iterator = typename std::list<key_value_pair>::const_iterator;
 
   lru_cache(size_t max_size, Factory factory)
     : max_size_(max_size), factory_(std::move(factory)) {
@@ -70,7 +71,16 @@ public:
     return cache_items_list_.begin();
   }
 
+
+  const_list_iterator begin() const {
+    return cache_items_list_.begin();
+  }
+
   list_iterator end() {
+    return cache_items_list_.end();
+  }
+
+  const_list_iterator end() const {
     return cache_items_list_.end();
   }
 

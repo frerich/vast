@@ -324,11 +324,13 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       }
       VAST_DEBUG(self, "finalized streaming");
     },
-    // Every "outbound path" (maybe also inbound?) has a path_state, which
-    // consists of a "Filter" and a vector of "T", the output buffer.
-    // T = table_slice_column
-    // Filter = vast::qualified_record_field
-    // Select = partition_selector
+    // Every "outbound path" has a path_state, which consists of a "Filter" 
+    // and a vector of "T", the output buffer. In the case of a partition,
+    // we have:
+    //   T:      vast::table_slice_column
+    //   Filter: vast::qualified_record_field
+    //   Select: vast::system::partition_selector
+    //
     // NOTE: The broadcast_downstream_manager has to iterate over all
     // indexers, and compute the qualified record field name for each. A
     // specialized downstream manager could optimize this by using e.g. a map

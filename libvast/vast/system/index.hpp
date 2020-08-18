@@ -150,6 +150,9 @@ struct index_state {
 
   // void init(const vast::fbs::Index& index);
 
+  /// @returns various status metrics.
+  caf::dictionary<caf::config_value> status() const;
+
   caf::error flush_to_disk();
 
   path index_filename(path basename = {}) const;
@@ -159,6 +162,7 @@ struct index_state {
   caf::error flush_index();
 
   caf::error flush_statistics();
+
 
   // -- query handling
 
@@ -176,6 +180,15 @@ struct index_state {
   /// @returns a query map for passing to INDEX workers over the spawned
   ///          EVALUATOR actors.
   query_map launch_evaluators(pending_query_map pqm, expression expr);
+
+
+  // -- flush handling ---------------------------------------------------
+
+  /// Adds a new flush listener.
+  void add_flush_listener(caf::actor listener);
+
+  /// Sends a notification to all listeners and clears the listeners list.
+  void notify_flush_listeners();
 
   // -- data members ----------------------------------------------------------
 
@@ -209,8 +222,11 @@ struct index_state {
   /// The maximum number of events that a partition can hold.
   size_t partition_capacity;
 
+  // The maximum size of the partition LRU cache (or the maximum number of
+  // read-only partition loaded to memory).
   size_t in_mem_partitions;
 
+  // The number of partitions initially returned for a query.
   size_t taste_partitions;
 
   /// Maps query IDs to pending lookup state.
@@ -227,6 +243,12 @@ struct index_state {
 
   /// Statistics about processed data.
   index_statistics stats;
+
+  // Handle of the accountant.
+  accountant_type accountant;
+
+  /// List of actors that wait for the next flush event.
+  std::vector<caf::actor> flush_listeners;
 
   static inline const char* name = "index";
 };

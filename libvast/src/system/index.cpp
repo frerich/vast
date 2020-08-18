@@ -167,6 +167,51 @@ caf::actor index_state::next_worker() {
   return result;
 }
 
+
+void index_state::add_flush_listener(caf::actor listener) {
+  VAST_DEBUG(self, "adds a new 'flush' subscriber:", listener);
+  flush_listeners.emplace_back(std::move(listener));
+  detail::notify_listeners_if_clean(*this, *stage);
+}
+
+void index_state::notify_flush_listeners() {
+  VAST_DEBUG(self, "sends 'flush' messages to", flush_listeners.size(),
+             "listeners");
+  for (auto& listener : flush_listeners)
+    self->send(listener, atom::flush_v);
+  flush_listeners.clear();
+}
+
+caf::dictionary<caf::config_value> index_state::status() const {
+  using caf::put_dictionary;
+  using caf::put_list;
+  caf::dictionary<caf::config_value> result;
+  // Statistics.
+  auto& stats_object = put_dictionary(result, "statistics");
+  auto& layout_object = put_dictionary(stats_object, "layouts");
+  for (auto& [name, layout_stats] : stats.layouts) {
+    auto xs = caf::dictionary<caf::config_value>{};
+    xs.emplace("count", layout_stats.count);
+    // We cannot use put_dictionary(layout_object, name) here, because this
+    // function splits the key at '.', which occurs in every layout name.
+    // Hence the fallback to low-level primitives.
+    layout_object.insert_or_assign(name, std::move(xs));
+  }
+  // Resident partitions.
+  auto& partitions = put_dictionary(result, "partitions");
+  if (active_partition.actor != nullptr)
+    partitions.emplace("active", to_string(active_partition.id));
+  auto& cached = put_list(partitions, "cached");
+  for (auto& kv : lru_partitions)
+    cached.emplace_back(to_string(kv.first));
+  auto& unpersisted = put_list(partitions, "unpersisted");
+  for (auto& kv : this->unpersisted)
+    unpersisted.emplace_back(to_string(kv.first));
+  // General state such as open streams.
+  detail::fill_status_map(result, self);
+  return result;
+}
+
 void index_state::request_query_map(query_state& lookup,
                                     uint32_t num_partitions) {
   VAST_TRACE(VAST_ARG(lookup), VAST_ARG(num_partitions));
@@ -395,7 +440,6 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       } else if (x->rows() > active.capacity) {
         VAST_DEBUG(self, "exceeds active capacity by",
                    (x->rows() - active.capacity));
-        // self->state.passive_partitions[active.id] = active.actor;
         self->state.lru_partitions.put(active.id, active.actor);
         decomission_active_partition();
         self->state.flush_to_disk(); // FIXME: delegate this to fs actor
@@ -616,20 +660,15 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       self->state.idle_workers.emplace_back(std::move(worker));
     },
     [=](atom::done, [[maybe_unused]] uuid partition_id) {
-      VAST_INFO(self, "query for partition", partition_id, "is done");
-      // FIXME! (not sure if this actually needs to be implemented here anymore,
-      // the new partition actors should just go away if they're not in the lru
-      // cache and have no query acting on them anymore)
-      // self->state.decrement_indexer_count(partition_id);
+      // Nothing to do.
+      VAST_VERBOSE(self, "query for partition", partition_id, "is done");
     },
     [=](caf::stream<table_slice_ptr> in) {
       VAST_DEBUG(self, "got a new source");
       return self->state.stage->add_inbound_path(in);
     },
     [=](atom::status) -> caf::config_value::dictionary {
-      // TODO: reinstate status handling
-      //   return self->state.status();
-      return caf::config_value::dictionary{};
+      return self->state.status();
     },
     [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
       // FIXME!
@@ -643,23 +682,24 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       self->become(caf::keep_behavior, st.has_worker);
     },
     [=](atom::done, uuid partition_id) {
-      // FIXME: Is this still needed at all? Do we need to do something
-      // else instead when a query is done?
-      // self->state.decrement_indexer_count(partition_id);
-      VAST_INFO(self, "query for partition", partition_id, "is done");
+      VAST_VERBOSE(self, "query for partition", partition_id, "is done");
     },
     [=](caf::stream<table_slice_ptr> in) {
       VAST_DEBUG(self, "got a new source");
       return self->state.stage->add_inbound_path(in);
     },
-    [=](atom::status) -> caf::config_value::dictionary {
-      // TODO: reinstate status handling
-      // return self->state.status();
-      return caf::config_value::dictionary{};
-    },
+              [=](accountant_type accountant) {
+          namespace defs = defaults::system;
+          self->state.accountant = std::move(accountant);
+          self->send(self->state.accountant, atom::announce_v, "index");
+          // FIXME: i dont see a telemetry handler in the index?
+          self->delayed_send(self, defs::telemetry_rate, atom::telemetry_v);
+        },
+          [=](atom::status) -> caf::config_value::dictionary {
+            return self->state.status();
+          },
     [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
-      // FIXME!
-      // self->state.add_flush_listener(std::move(listener));
+      self->state.add_flush_listener(std::move(listener));
     },
   };
 }

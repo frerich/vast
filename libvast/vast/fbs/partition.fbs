@@ -33,6 +33,9 @@ table Partition {
   /// The available layouts in this partition.
   combined_layout: [ubyte]; // TODO: use the layout type once availble
 
+  /// A map storing the mapping from type name -> ids
+  type_ids: [ubyte]; // FIXME
+
   /// The contained value indexes.
   indexes: [QualifiedValueIndex];
 }

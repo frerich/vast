@@ -208,9 +208,6 @@ TEST(full partition roundtrip) {
         rp.receive(
           [&](vast::ids ids) { 
             CHECK_EQUAL(rank(ids), expected_ids);
-            for (auto id : select(ids)) {
-              std::cerr << "got id" << id << std::endl;
-            }
           },
           [](caf::error) { CHECK(false); });
       }
