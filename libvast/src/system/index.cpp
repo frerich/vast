@@ -50,7 +50,6 @@
 #include "vast/system/spawn_indexer.hpp"
 #include "vast/table_slice.hpp"
 
-#include <caf/attach_continuous_stream_stage.hpp>
 #include <caf/make_counted.hpp>
 #include <caf/stateful_actor.hpp>
 
@@ -382,8 +381,9 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
         });
   };
   // Setup stream manager.
-  self->state.stage = caf::attach_continuous_stream_stage(
+  self->state.stage = detail::attach_notifying_stream_stage(
     self,
+    /* continuous = */ true,
     [=](caf::unit_t&) {
       VAST_DEBUG(self, "initializes new table slice stream");
     },
@@ -669,8 +669,8 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
 namespace {
 
 auto make_index_stage(index_state* st) {
-  using impl = detail::notifying_stream_manager<indexer_stage_driver>;
-  auto result = caf::make_counted<impl>(st->self);
+  using impl = detail::notifying_stream_manager<caf::stateful_actor<index_state>, indexer_stage_driver>;
+  auto result = caf::make_counted<impl>(st->self, st->self);
   result->continuous(true);
   return result;
 }
