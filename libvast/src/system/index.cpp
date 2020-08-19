@@ -385,13 +385,14 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
   self->state.self = self;
   self->state.fs_actor = fs;
   self->state.dir = dir;
+  self->state.partition_capacity = partition_capacity;
+  self->state.taste_partitions = taste_partitions;
+  self->state.lru_partitions.resize(in_mem_partitions);
   // Read persistent state.
   if (auto err = self->state.load_from_disk()) {
     vast::die("Cannot load index state from disk, please try again or remove "
               "it to start with a clean state (after making a backup");
   }
-  self->state.lru_partitions.resize(in_mem_partitions);
-  self->state.taste_partitions = taste_partitions;
   // Creates a new active partition and updates index state.
   auto create_active_partition = [=] {
     auto id = uuid::random();
@@ -447,6 +448,9 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
         create_active_partition();
       }
       VAST_DEBUG(self, "forwards table slice", to_string(*x));
+      VAST_DEBUG(self, "slice info:", active.capacity,
+                 self->state.partition_capacity, x->rows());
+
       out.push(x);
       self->state.meta_idx.add(active.id, *x);
       if (active.capacity == self->state.partition_capacity
