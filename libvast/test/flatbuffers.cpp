@@ -12,9 +12,10 @@
  ******************************************************************************/
 
 #include "vast/chunk.hpp"
+#include "vast/detail/spawn_container_source.hpp"
 #include "vast/expression.hpp"
-#include "vast/fbs/meta_index.hpp"
 #include "vast/fbs/index.hpp"
+#include "vast/fbs/meta_index.hpp"
 #include "vast/fbs/utils.hpp"
 #include "vast/fbs/uuid.hpp"
 #include "vast/fwd.hpp"
@@ -29,13 +30,9 @@
 #include "vast/type.hpp"
 #include "vast/uuid.hpp"
 
-#include "vast/detail/spawn_container_source.hpp"
-
-
-
 #define SUITE flatbuffers
-#include "vast/test/test.hpp"
 #include "vast/test/fixtures/actor_system_and_events.hpp"
+#include "vast/test/test.hpp"
 
 using vast::byte;
 using vast::span;
@@ -83,7 +80,8 @@ TEST(index roundtrip) {
   // The active partition is not supposed to appear in the
   // created flatbuffer
   state.active_partition.id = vast::uuid::random();
-  // Both unpersisted and persisted partitions should show up in the created flatbuffer.
+  // Both unpersisted and persisted partitions should show up in the created
+  // flatbuffer.
   state.unpersisted[vast::uuid::random()] = nullptr;
   state.unpersisted[vast::uuid::random()] = nullptr;
   state.persisted_partitions.push_back(vast::uuid::random());
@@ -126,7 +124,8 @@ TEST(empty partition roundtrip) {
   state.partition_uuid = vast::uuid::random();
   state.offset = 17;
   state.events = 23;
-  state.combined_layout = vast::record_type{{"x", vast::count_type{}}}.name("y");
+  state.combined_layout
+    = vast::record_type{{"x", vast::count_type{}}}.name("y");
   auto& ids = state.type_ids["x"];
   ids.append_bits(0, 3);
   ids.append_bits(1, 3);
@@ -157,7 +156,9 @@ FIXTURE_SCOPE(foo, fixtures::deterministic_actor_system)
 // able to return correct results.
 TEST(full partition roundtrip) {
   // Spawn a partition.
-  auto fs = self->spawn(vast::system::posix_filesystem, directory); // `directory` is provided by the unit test fixture
+  auto fs = self->spawn(
+    vast::system::posix_filesystem,
+    directory); // `directory` is provided by the unit test fixture
   auto partition_uuid = vast::uuid::random();
   auto partition = sys.spawn(vast::system::v2::partition, partition_uuid, fs);
   run();
@@ -167,69 +168,83 @@ TEST(full partition roundtrip) {
   vast::msgpack_table_slice_builder builder(layout);
   CHECK(builder.add(0u));
   auto slice = builder.finish();
-  auto data = std::vector<vast::table_slice_ptr> {slice};
+  auto data = std::vector<vast::table_slice_ptr>{slice};
   auto src = vast::detail::spawn_container_source(sys, data, partition);
   REQUIRE(src);
   run();
   // self->send_exit(src, caf::exit_reason::user_shutdown);
 
   // Persist the partition to disk;
-  vast::path persist_path = "test-partition"; // will be interpreted relative to the fs actor's root dir
-  auto persist_promise = self->request(partition, caf::infinite, vast::atom::persist_v, persist_path);
+  vast::path persist_path = "test-partition"; // will be interpreted relative to
+                                              // the fs actor's root dir
+  auto persist_promise = self->request(partition, caf::infinite,
+                                       vast::atom::persist_v, persist_path);
   run();
-  persist_promise.receive(
-    [](vast::atom::ok) { CHECK("persisting done"); },
-    [](caf::error err) { FAIL(err); });
+  persist_promise.receive([](vast::atom::ok) { CHECK("persisting done"); },
+                          [](caf::error err) { FAIL(err); });
   self->send_exit(partition, caf::exit_reason::user_shutdown);
 
   // Read persisted state from disk.
   vast::chunk_ptr chunk;
-  auto read_promise = self->request(caf::actor_cast<vast::system::filesystem_type>(fs), caf::infinite, vast::atom::read_v, persist_path);
+  auto read_promise
+    = self->request(caf::actor_cast<vast::system::filesystem_type>(fs),
+                    caf::infinite, vast::atom::read_v, persist_path);
   run();
   read_promise.receive(
-      [&](const vast::chunk_ptr& chk) {
-        CHECK(chk);
-        chunk = chk;
-      },
-      [&](const caf::error& err) { FAIL(err); });
+    [&](const vast::chunk_ptr& chk) {
+      CHECK(chk);
+      chunk = chk;
+    },
+    [&](const caf::error& err) { FAIL(err); });
 
-  // Spawn a read-only partition from this chunk and try to query the data we added.
-  // We make two queries, one "#type"-query and one "normal" query
-  auto readonly_partition = sys.spawn(vast::system::v2::readonly_partition, partition_uuid, *chunk);
+  // Spawn a read-only partition from this chunk and try to query the data we
+  // added. We make two queries, one "#type"-query and one "normal" query
+  auto readonly_partition
+    = sys.spawn(vast::system::v2::readonly_partition, partition_uuid, *chunk);
   REQUIRE(readonly_partition);
   run();
-  auto test_expression = [&](const vast::expression& expression, size_t expected_indexers, size_t expected_ids) {
-    auto rp = self->request(readonly_partition, caf::infinite, vast::atom::evaluate_v, expression);
+  auto test_expression = [&](const vast::expression& expression,
+                             size_t expected_indexers, size_t expected_ids) {
+    auto rp = self->request(readonly_partition, caf::infinite,
+                            vast::atom::evaluate_v, expression);
     run();
     rp.receive(
       [&](vast::evaluation_triples triples) {
-      CHECK_EQUAL(triples.size(), expected_indexers);
-      for (auto triple : triples) {
-        auto curried_predicate = get<1>(triple);
-        auto actor = get<2>(triple);
-        CHECK(actor);
-        auto rp = self->request(actor, caf::infinite, curried_predicate);
-        run();
-        rp.receive(
-          [&](vast::ids ids) { 
-            CHECK_EQUAL(rank(ids), expected_ids);
-          },
-          [](caf::error) { CHECK(false); });
-      }
-    },
-    [](caf::error) { CHECK(false); });
+        CHECK_EQUAL(triples.size(), expected_indexers);
+        for (auto triple : triples) {
+          auto curried_predicate = get<1>(triple);
+          auto actor = get<2>(triple);
+          CHECK(actor);
+          auto rp = self->request(actor, caf::infinite, curried_predicate);
+          run();
+          rp.receive(
+            [&](vast::ids ids) { CHECK_EQUAL(rank(ids), expected_ids); },
+            [](caf::error) { CHECK(false); });
+        }
+      },
+      [](caf::error) { CHECK(false); });
   };
-  auto x_equals_zero = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}};
-  auto x_equals_one = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{1u}}};
-  auto type_equals_y = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"y"}}};
-  auto type_equals_foo = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"foo"}}};
-  // // For the query `x == 0`, we expect one indexer (for field x) and one result.
+  auto x_equals_zero = vast::expression{
+    vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}};
+  auto x_equals_one = vast::expression{
+    vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{1u}}};
+  auto type_equals_y = vast::expression{
+    vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal,
+                    vast::data{"y"}}};
+  auto type_equals_foo = vast::expression{
+    vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal,
+                    vast::data{"foo"}}};
+  // // For the query `x == 0`, we expect one indexer (for field x) and one
+  // result.
   test_expression(x_equals_zero, 1, 1);
-  // // For the query `x == 1`, we expect one indexer (for field x) and zero results.
+  // // For the query `x == 1`, we expect one indexer (for field x) and zero
+  // results.
   test_expression(x_equals_one, 1, 0);
-  // // For the query `#type == "x"`, we expect one indexer (a one-shot indexer for type queries) and one result.
+  // // For the query `#type == "x"`, we expect one indexer (a one-shot indexer
+  // for type queries) and one result.
   test_expression(type_equals_y, 1, 1);
-  // // For the query `#type == "foo"`, we expect one indexer (a one-shot indexer for type queries) and no results.
+  // // For the query `#type == "foo"`, we expect one indexer (a one-shot
+  // indexer for type queries) and no results.
   test_expression(type_equals_foo, 1, 0);
   // Shut down test actors.
   self->send_exit(readonly_partition, caf::exit_reason::user_shutdown);

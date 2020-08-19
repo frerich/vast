@@ -167,7 +167,6 @@ caf::actor index_state::next_worker() {
   return result;
 }
 
-
 void index_state::add_flush_listener(caf::actor listener) {
   VAST_DEBUG(self, "adds a new 'flush' subscriber:", listener);
   flush_listeners.emplace_back(std::move(listener));
@@ -376,9 +375,10 @@ caf::error index_state::flush_to_disk() {
   return caf::none;
 }
 
-caf::behavior index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
-                    size_t partition_capacity, size_t in_mem_partitions,
-                    size_t taste_partitions, size_t num_workers) {
+caf::behavior
+index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
+      size_t partition_capacity, size_t in_mem_partitions,
+      size_t taste_partitions, size_t num_workers) {
   VAST_VERBOSE(self, "initializes index in", dir);
   VAST_VERBOSE(self, "caps partition size at", partition_capacity, "events");
   // Set members.
@@ -688,14 +688,14 @@ caf::behavior index(caf::stateful_actor<index_state>* self, filesystem_type fs, 
       VAST_DEBUG(self, "got a new source");
       return self->state.stage->add_inbound_path(in);
     },
-              [=](accountant_type accountant) {
-          namespace defs = defaults::system;
-          self->state.accountant = std::move(accountant);
-          // TODO: The index
-        },
-          [=](atom::status) -> caf::config_value::dictionary {
-            return self->state.status();
-          },
+    [=](accountant_type accountant) {
+      namespace defs = defaults::system;
+      self->state.accountant = std::move(accountant);
+      // TODO: The index
+    },
+    [=](atom::status) -> caf::config_value::dictionary {
+      return self->state.status();
+    },
     [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
       self->state.add_flush_listener(std::move(listener));
     },
@@ -707,7 +707,9 @@ caf::behavior index(caf::stateful_actor<index_state>* self, filesystem_type fs, 
 namespace {
 
 auto make_index_stage(index_state* st) {
-  using impl = detail::notifying_stream_manager<caf::stateful_actor<index_state>, indexer_stage_driver>;
+  using impl
+    = detail::notifying_stream_manager<caf::stateful_actor<index_state>,
+                                       indexer_stage_driver>;
   auto result = caf::make_counted<impl>(st->self, st->self);
   result->continuous(true);
   return result;

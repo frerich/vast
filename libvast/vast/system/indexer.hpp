@@ -42,7 +42,8 @@ struct indexer_state {
 caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
                       caf::settings index_opts);
 
-caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self, value_index_ptr idx, caf::settings);
+caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self,
+                               value_index_ptr idx, caf::settings);
 
 } // namespace v2
 

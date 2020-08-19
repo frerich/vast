@@ -46,9 +46,10 @@ namespace vast::system {
 
 namespace v2 {
 
-// FIXME: Make a pass to see which options need to be set at indexer creation time and which at runtime. 
-caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self, value_index_ptr idx, caf::settings)
-{
+// FIXME: Make a pass to see which options need to be set at indexer creation
+// time and which at runtime.
+caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self,
+                               value_index_ptr idx, caf::settings) {
   self->state.name = "indexer-" + to_string(idx->type());
   self->state.idx = std::move(idx);
   return {
@@ -62,9 +63,7 @@ caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self, value_i
       VAST_DEBUG(self, "got predicate:", pred);
       return self->state.idx->lookup(pred.op, make_view(pred.rhs));
     },
-    [=](atom::shutdown) {
-      self->quit(caf::exit_reason::user_shutdown);
-    },
+    [=](atom::shutdown) { self->quit(caf::exit_reason::user_shutdown); },
   };
 }
 

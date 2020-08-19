@@ -30,7 +30,8 @@ maybe_actor spawn_index(node_actor* self, spawn_arguments& args) {
   auto opt = [&](caf::string_view key, auto default_value) {
     return get_or(args.inv.options, key, default_value);
   };
-  auto fs = caf::actor_cast<filesystem_type>(self->state.registry.find_by_label("filesystem"));
+  auto fs = caf::actor_cast<filesystem_type>(
+    self->state.registry.find_by_label("filesystem"));
   if (!fs)
     return make_error(ec::lookup_error, "couldnt find filesystem actor");
   namespace sd = vast::defaults::system;

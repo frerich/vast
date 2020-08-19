@@ -79,8 +79,7 @@ caf::actor indexer_at(const PartitionState& state, size_t position) {
 
 template <typename PartitionState>
 caf::actor fetch_indexer(const PartitionState& state, const data_extractor& dx,
-                         relational_operator op,
-                         const data& x) {
+                         relational_operator op, const data& x) {
   VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
   // Sanity check.
   if (dx.offset.empty())
@@ -111,7 +110,6 @@ fetch_indexer(const PartitionState& state, const attribute_extractor& ex,
         row_ids |= ids;
     // TODO: Spawning a one-shot actor is quite expensive. Maybe the
     //       partition could instead maintain this actor lazily.
-    std::cerr << "self is " << state.self << std::endl;
     return state.self->spawn([row_ids]() -> caf::behavior {
       return [=](const curried_predicate&) { return row_ids; };
     });
@@ -174,11 +172,14 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
     auto data = builder.CreateVector(
       reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
     using pair = decltype(x.indexers)::value_type;
-    auto it = std::find_if(x.indexers.begin(), x.indexers.end(), [&](const pair& kv) {
-      return kv.second.id() == actor_id;
-    });
-    auto type = builder.CreateString("ValueIndex"); // TODO: read this from the actual type of the indexer
-    auto fqf = builder.CreateString(it->first.field_name); // FIXME: Do we need `.fqn()` here instead?
+    auto it
+      = std::find_if(x.indexers.begin(), x.indexers.end(), [&](const pair& kv) {
+          return kv.second.id() == actor_id;
+        });
+    auto type = builder.CreateString(
+      "ValueIndex"); // TODO: read this from the actual type of the indexer
+    auto fqf = builder.CreateString(
+      it->first.field_name); // FIXME: Do we need `.fqn()` here instead?
     fbs::ValueIndexBuilder vbuilder(builder);
     vbuilder.add_type(type);
     vbuilder.add_data(data);
@@ -204,18 +205,17 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
     layout_chunk->size());
   std::vector<flatbuffers::Offset<fbs::TypeIds>> tids;
   for (const auto& kv : x.type_ids) {
-    std::cerr << "packing " << kv.first << std::endl;
     auto name = builder.CreateString(kv.first);
     buf.clear();
-    caf::binary_serializer bs {nullptr, buf};
+    caf::binary_serializer bs{nullptr, buf};
     bs(kv.second);
-    auto ids = builder.CreateVector(reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+    auto ids = builder.CreateVector(
+      reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
     fbs::TypeIdsBuilder tids_builder(builder);
     tids_builder.add_name(name);
     tids_builder.add_ids(ids);
     tids.push_back(tids_builder.Finish());
   }
-  std::cerr << "got " << tids.size() << " mappings" << std::endl;
   auto type_ids = builder.CreateVector(tids);
   auto name = builder.CreateString(x.name);
   fbs::PartitionBuilder partition_builder(builder);
@@ -248,10 +248,12 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
                                         "flatbuffer");
   for (auto qualified_index : *indexes) {
     if (!qualified_index->qualified_field_name())
-      return make_error(ec::format_error, "missing field name in qualified index");
+      return make_error(ec::format_error, "missing field name in qualified "
+                                          "index");
     auto index = qualified_index->index();
     if (!index)
-      return make_error(ec::format_error, "missing index name in qualified index");
+      return make_error(ec::format_error, "missing index name in qualified "
+                                          "index");
     if (!index->type())
       return make_error(ec::format_error, "missing type in index");
     if (!index->data())
@@ -264,46 +266,48 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   state.offset = partition.offset();
   state.name = partition.name()->str();
   caf::binary_deserializer bds(
-    nullptr,
-    reinterpret_cast<const char*>(combined_layout->data()),
+    nullptr, reinterpret_cast<const char*>(combined_layout->data()),
     combined_layout->size());
   bds >> state.combined_layout;
   // if (state.combined_layout.fields.size() != indexes->size())
-    // return make_error(ec::format_error, "incoherent number of indexers"); // FIXME
+  // return make_error(ec::format_error, "incoherent number of indexers"); //
+  // FIXME
   // We rely on the indexes being stored in the same order as the layout fields.
   for (size_t i = 0; i < indexes->size(); ++i) {
     auto qualified_index = indexes->Get(i);
-    auto field = state.combined_layout.fields.at(i);    
+    auto field = state.combined_layout.fields.at(i);
     //
-    auto qf = qualified_record_field{qualified_index->qualified_field_name()->str(), field};
+    auto qf = qualified_record_field{
+      qualified_index->qualified_field_name()->str(), field};
     auto index = qualified_index->index();
     auto data = index->data();
     auto& vindex_ptr = state.indexer_states[qf];
-    caf::binary_deserializer bds(nullptr,
-                                reinterpret_cast<const char*>(data->data()),
-                                data->size());
+    caf::binary_deserializer bds(
+      nullptr, reinterpret_cast<const char*>(data->data()), data->size());
     auto error = bds(vindex_ptr);
     if (error)
       return make_error(ec::format_error, "not all bytes used for value index");
   }
-  VAST_VERBOSE_ANON("restored", state.indexer_states.size(), "indexers for partition", state.partition_uuid);
+  VAST_VERBOSE_ANON("restored", state.indexer_states.size(),
+                    "indexers for partition", state.partition_uuid);
   auto type_ids = partition.type_ids();
   for (size_t i = 0; i < type_ids->size(); ++i) {
     auto type_ids_tuple = type_ids->Get(i);
     auto name = type_ids_tuple->name();
     auto ids_data = type_ids_tuple->ids();
     auto& ids = state.type_ids[name->str()];
-    caf::binary_deserializer bds(nullptr, reinterpret_cast<const char*>(ids_data->data()),
-                                ids_data->size());
+    caf::binary_deserializer bds(
+      nullptr, reinterpret_cast<const char*>(ids_data->data()),
+      ids_data->size());
     bds >> ids;
-    std::cerr << "restored " << name->str() << std::endl;
   }
-  VAST_VERBOSE_ANON("restored", state.type_ids.size(), "type to ids mappings for partition", state.partition_uuid);
-  std::cerr << "restored" << state.type_ids.size() << "type to ids mappings for partition" << type_ids->size() << std::endl;
+  VAST_VERBOSE_ANON("restored", state.type_ids.size(),
+                    "type to ids mappings for partition", state.partition_uuid);
   return caf::none;
 }
 
-caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id, filesystem_type fs) {
+caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
+                        filesystem_type fs) {
   self->state.self = self;
   self->state.name = "partition-" + to_string(id);
   self->state.partition_uuid = id;
@@ -356,7 +360,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id, fil
       }
       VAST_DEBUG(self, "finalized streaming");
     },
-    // Every "outbound path" has a path_state, which consists of a "Filter" 
+    // Every "outbound path" has a path_state, which consists of a "Filter"
     // and a vector of "T", the output buffer. In the case of a partition,
     // we have:
     //   T:      vast::table_slice_column
@@ -453,8 +457,10 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id, fil
       auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
       VAST_VERBOSE(self, "persisting partition with total size", ys->size(),
                    "bytes");
-      self->state.persistence_promise.delegate(
-        self->state.fs_actor, atom::write_v, *self->state.persist_path, fbchunk);
+      self->state.persistence_promise.delegate(self->state.fs_actor,
+                                               atom::write_v,
+                                               *self->state.persist_path,
+                                               fbchunk);
       return; // FIXME: send error message
     },
     [=](atom::evaluate, const expression& expr) {
@@ -508,11 +514,11 @@ readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
   for (auto& kv : self->state.indexer_states) {
     auto field = kv.first;
     // FIXME: Do we also need to persist some of the settings?
-    self->state.indexers[field] = self->spawn(readonly_indexer, std::move(kv.second), caf::settings{});
+    self->state.indexers[field]
+      = self->spawn(readonly_indexer, std::move(kv.second), caf::settings{});
   }
   self->set_exit_handler([=](const caf::exit_msg& msg) {
-    std::cerr << "got error message" << std::endl;
-        VAST_DEBUG(self, "received EXIT from", msg.source,
+    VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);
     auto indexers = std::vector<caf::actor>{};
     for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)

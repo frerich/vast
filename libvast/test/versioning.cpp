@@ -3,5 +3,4 @@
 // state.
 
 TEST(restore v0 index) {
-
 }
