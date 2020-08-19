@@ -250,6 +250,8 @@ struct index_state {
   /// List of actors that wait for the next flush event.
   std::vector<caf::actor> flush_listeners;
 
+  filesystem_type fs_actor;
+
   static inline const char* name = "index";
 };
 
@@ -261,10 +263,11 @@ caf::expected<flatbuffers::Offset<fbs::Index>>
 pack(flatbuffers::FlatBufferBuilder& builder, const index_state& x);
 
 /// Indexes events in horizontal partitions.
+/// @param fs The filesystem actor. Not used by the index itself but forwarded to partitions.
 /// @param dir The directory of the index.
 /// @param partition_capacity The maximum number of events per partition.
 /// @pre `partition_capacity > 0
-caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
+caf::behavior index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
                     size_t partition_capacity, size_t in_mem_partitions,
                     size_t taste_partitions, size_t num_workers);
 

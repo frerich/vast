@@ -376,13 +376,14 @@ caf::error index_state::flush_to_disk() {
   return caf::none;
 }
 
-caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
+caf::behavior index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
                     size_t partition_capacity, size_t in_mem_partitions,
                     size_t taste_partitions, size_t num_workers) {
   VAST_VERBOSE(self, "initializes index in", dir);
   VAST_VERBOSE(self, "caps partition size at", partition_capacity, "events");
   // Set members.
   self->state.self = self;
+  self->state.fs_actor = fs;
   self->state.dir = dir;
   // Read persistent state.
   if (auto err = self->state.load_from_disk()) {
@@ -394,7 +395,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
   // Creates a new active partition and updates index state.
   auto create_active_partition = [=] {
     auto id = uuid::random();
-    auto part = self->spawn(partition, id);
+    auto part = self->spawn(partition, id, self->state.fs_actor);
     auto slot = self->state.stage->add_outbound_path(part);
     self->state.active_partition.actor = part;
     self->state.active_partition.stream_slot = slot;
@@ -671,8 +672,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       return self->state.status();
     },
     [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
-      // FIXME!
-      // self->state.add_flush_listener(std::move(listener));
+      self->state.add_flush_listener(std::move(listener));
     });
   return {
     // The default behaviour
@@ -691,9 +691,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
               [=](accountant_type accountant) {
           namespace defs = defaults::system;
           self->state.accountant = std::move(accountant);
-          self->send(self->state.accountant, atom::announce_v, "index");
-          // FIXME: i dont see a telemetry handler in the index?
-          self->delayed_send(self, defs::telemetry_rate, atom::telemetry_v);
+          // TODO: The index
         },
           [=](atom::status) -> caf::config_value::dictionary {
             return self->state.status();

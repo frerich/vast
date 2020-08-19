@@ -18,11 +18,22 @@ table QualifiedValueIndex {
   index: ValueIndex;
 }
 
+table TypeIds {
+  /// The type name.
+  name: string;
+
+  /// The serialized `vast::ids`.
+  ids: [ubyte];
+}
+
 /// The persistent state of the meta index.
 //  TODO: Add a `Version` field.
 table Partition {
   /// The UUID of this partition.
   uuid: UUID;
+
+  /// A human-readable name for this partition
+  name: string;
 
   /// The first ID in the partition.
   offset: uint64;
@@ -34,7 +45,7 @@ table Partition {
   combined_layout: [ubyte]; // TODO: use the layout type once availble
 
   /// A map storing the mapping from type name -> ids
-  type_ids: [ubyte]; // FIXME
+  type_ids: [TypeIds]; // TODO: We might be able to reconstruct this mapping from the indices as well
 
   /// The contained value indexes.
   indexes: [QualifiedValueIndex];

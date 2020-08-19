@@ -55,6 +55,7 @@
 #include "caf/binary_serializer.hpp"
 #include "caf/broadcast_downstream_manager.hpp"
 #include "caf/deserializer.hpp"
+#include "caf/fwd.hpp"
 #include "caf/sec.hpp"
 
 using namespace std::chrono;
@@ -196,17 +197,35 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
   caf::binary_serializer bs{
     nullptr,
     buf}; // FIXME: do we need to pass the current actor system as first arg?
-  inspect(bs, x.combined_layout);
+  bs(x.combined_layout);
   auto layout_chunk = chunk::make(std::move(buf));
   auto combined_layout = builder.CreateVector(
     reinterpret_cast<const uint8_t*>(layout_chunk->data()),
     layout_chunk->size());
+  std::vector<flatbuffers::Offset<fbs::TypeIds>> tids;
+  for (const auto& kv : x.type_ids) {
+    std::cerr << "packing " << kv.first << std::endl;
+    auto name = builder.CreateString(kv.first);
+    buf.clear();
+    caf::binary_serializer bs {nullptr, buf};
+    bs(kv.second);
+    auto ids = builder.CreateVector(reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+    fbs::TypeIdsBuilder tids_builder(builder);
+    tids_builder.add_name(name);
+    tids_builder.add_ids(ids);
+    tids.push_back(tids_builder.Finish());
+  }
+  std::cerr << "got " << tids.size() << " mappings" << std::endl;
+  auto type_ids = builder.CreateVector(tids);
+  auto name = builder.CreateString(x.name);
   fbs::PartitionBuilder partition_builder(builder);
   partition_builder.add_uuid(*uuid);
+  partition_builder.add_name(name);
   partition_builder.add_offset(x.offset);
   partition_builder.add_events(x.events);
   partition_builder.add_indexes(indexes);
   partition_builder.add_combined_layout(combined_layout);
+  partition_builder.add_type_ids(type_ids);
   return partition_builder.Finish();
 }
 
@@ -215,6 +234,9 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   // Check that all fields exist.
   if (!partition.uuid())
     return make_error(ec::format_error, "missing 'uuid' field in partition "
+                                        "flatbuffer");
+  if (!partition.name())
+    return make_error(ec::format_error, "missing 'name' field in partition "
                                         "flatbuffer");
   auto combined_layout = partition.combined_layout();
   if (!combined_layout)
@@ -240,13 +262,14 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   unpack(*partition.uuid(), state.partition_uuid);
   state.events = partition.events();
   state.offset = partition.offset();
+  state.name = partition.name()->str();
   caf::binary_deserializer bds(
     nullptr,
     reinterpret_cast<const char*>(combined_layout->data()),
     combined_layout->size());
   bds >> state.combined_layout;
-  if (state.combined_layout.fields.size() != indexes->size())
-    return make_error(ec::format_error, "incoherent number of indexers");
+  // if (state.combined_layout.fields.size() != indexes->size())
+    // return make_error(ec::format_error, "incoherent number of indexers"); // FIXME
   // We rely on the indexes being stored in the same order as the layout fields.
   for (size_t i = 0; i < indexes->size(); ++i) {
     auto qualified_index = indexes->Get(i);
@@ -259,25 +282,34 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
     caf::binary_deserializer bds(nullptr,
                                 reinterpret_cast<const char*>(data->data()),
                                 data->size());
-    bds >> vindex_ptr;
-    if (bds.remaining() > 0)
+    auto error = bds(vindex_ptr);
+    if (error)
       return make_error(ec::format_error, "not all bytes used for value index");
   }
   VAST_VERBOSE_ANON("restored", state.indexer_states.size(), "indexers for partition", state.partition_uuid);
+  auto type_ids = partition.type_ids();
+  for (size_t i = 0; i < type_ids->size(); ++i) {
+    auto type_ids_tuple = type_ids->Get(i);
+    auto name = type_ids_tuple->name();
+    auto ids_data = type_ids_tuple->ids();
+    auto& ids = state.type_ids[name->str()];
+    caf::binary_deserializer bds(nullptr, reinterpret_cast<const char*>(ids_data->data()),
+                                ids_data->size());
+    bds >> ids;
+    std::cerr << "restored " << name->str() << std::endl;
+  }
+  VAST_VERBOSE_ANON("restored", state.type_ids.size(), "type to ids mappings for partition", state.partition_uuid);
+  std::cerr << "restored" << state.type_ids.size() << "type to ids mappings for partition" << type_ids->size() << std::endl;
   return caf::none;
 }
 
-caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
+caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id, filesystem_type fs) {
   self->state.self = self;
   self->state.name = "partition-" + to_string(id);
   self->state.partition_uuid = id;
   self->state.offset = vast::invalid_id;
   self->state.events = 0;
-  auto actor = self->system().registry().get(atom::filesystem_v);
-  // FIXME: Pass the actor as an argument to `partition()` instead.
-  if (!actor)
-    die("could not find filesystem actor in registry");
-  self->state.fs_actor = caf::actor_cast<filesystem_type>(actor);
+  self->state.fs_actor = fs;
   // stream stage input: table_slice_ptr
   // stream stage output: table_slice_column
   self->state.stage = caf::attach_continuous_stream_stage(

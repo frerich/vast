@@ -165,7 +165,7 @@ caf::error unpack(const fbs::Partition& x, readonly_partition_state& y);
 /// Spawns a partition.
 /// @param self The partition actor.
 /// @param id The UUID of this partition.
-caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
+caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id, filesystem_type fs);
 
 /// Spawns a read-only partition.
 /// TODO: Maybe we should just send the path here, then the actual loading of

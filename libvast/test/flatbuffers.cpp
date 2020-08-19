@@ -127,6 +127,9 @@ TEST(empty partition roundtrip) {
   state.offset = 17;
   state.events = 23;
   state.combined_layout = vast::record_type{{"x", vast::count_type{}}}.name("y");
+  auto& ids = state.type_ids["x"];
+  ids.append_bits(0, 3);
+  ids.append_bits(1, 3);
   // Serialize partition.
   auto expected_fb = vast::fbs::wrap(state);
   REQUIRE(expected_fb);
@@ -135,46 +138,48 @@ TEST(empty partition roundtrip) {
   vast::system::v2::readonly_partition_state readonly_state;
   auto partition = vast::fbs::GetPartition(span.data());
   REQUIRE(partition);
-  unpack(*partition, readonly_state);
+  auto error = unpack(*partition, readonly_state);
+  CHECK(!error);
+  std::cerr << caf::to_string(error) << std::endl;
   CHECK_EQUAL(readonly_state.partition_uuid, state.partition_uuid);
   CHECK_EQUAL(readonly_state.offset, state.offset);
   CHECK_EQUAL(readonly_state.events, state.events);
   CHECK_EQUAL(readonly_state.combined_layout, state.combined_layout);
   CHECK_EQUAL(readonly_state.name, state.name);
+  CHECK_EQUAL(readonly_state.type_ids, state.type_ids);
 }
 
 FIXTURE_SCOPE(foo, fixtures::deterministic_actor_system)
 
+// This test spawns a partition, fills it with some test data, then persists
+// the partition to disk, restores it from the persisted on-disk state, and
+// finally does some queries on it to ensure the restored flatbuffer is still
+// able to return correct results.
 TEST(full partition roundtrip) {
-  // caf::scoped_actor actor(sys);
+  // Spawn a partition.
   auto fs = self->spawn(vast::system::posix_filesystem, directory); // `directory` is provided by the unit test fixture
-  sys.registry().put(vast::atom::filesystem_v, fs); 
   auto partition_uuid = vast::uuid::random();
-
-  auto partition = sys.spawn(vast::system::v2::partition, partition_uuid);
+  auto partition = sys.spawn(vast::system::v2::partition, partition_uuid, fs);
   run();
   REQUIRE(partition);
+  // Add data to the partition.
   auto layout = vast::record_type{{"x", vast::count_type{}}}.name("y");
   vast::msgpack_table_slice_builder builder(layout);
   CHECK(builder.add(0u));
   auto slice = builder.finish();
   auto data = std::vector<vast::table_slice_ptr> {slice};
-
   auto src = vast::detail::spawn_container_source(sys, data, partition);
   REQUIRE(src);
   run();
-  self->send_exit(src, caf::exit_reason::user_shutdown);
+  // self->send_exit(src, caf::exit_reason::user_shutdown);
 
   // Persist the partition to disk;
   vast::path persist_path = "test-partition"; // will be interpreted relative to the fs actor's root dir
-  // The standard `request/receive` leads to a deadlock here, not sure why but maybe some weird interaction
-  // between blocking actors and response promises.
-  self->send(partition, vast::atom::persist_v, persist_path);
+  auto persist_promise = self->request(partition, caf::infinite, vast::atom::persist_v, persist_path);
   run();
-  self->receive(
+  persist_promise.receive(
     [](vast::atom::ok) { CHECK("persisting done"); },
     [](caf::error err) { FAIL(err); });
-  // Shut down partition.
   self->send_exit(partition, caf::exit_reason::user_shutdown);
 
   // Read persisted state from disk.
@@ -193,12 +198,12 @@ TEST(full partition roundtrip) {
   auto readonly_partition = sys.spawn(vast::system::v2::readonly_partition, partition_uuid, *chunk);
   REQUIRE(readonly_partition);
   run();
-  auto test_expression = [&](const vast::expression& expression, size_t expected_partitions, size_t expected_ids) {
+  auto test_expression = [&](const vast::expression& expression, size_t expected_indexers, size_t expected_ids) {
     auto rp = self->request(readonly_partition, caf::infinite, vast::atom::evaluate_v, expression);
     run();
     rp.receive(
       [&](vast::evaluation_triples triples) {
-      CHECK_EQUAL(triples.size(), expected_partitions);
+      CHECK_EQUAL(triples.size(), expected_indexers);
       for (auto triple : triples) {
         auto curried_predicate = get<1>(triple);
         auto actor = get<2>(triple);
@@ -216,16 +221,16 @@ TEST(full partition roundtrip) {
   };
   auto x_equals_zero = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{0u}}};
   auto x_equals_one = vast::expression{vast::predicate{vast::field_extractor{".x"}, vast::equal, vast::data{1u}}};
-  auto type_equals_x = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"x"}}};
   auto type_equals_y = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"y"}}};
-  // // For the query `x == 0`, we expect one partition candidate partition and one result.
+  auto type_equals_foo = vast::expression{vast::predicate{vast::attribute_extractor{vast::atom::type_v}, vast::equal, vast::data{"foo"}}};
+  // // For the query `x == 0`, we expect one indexer (for field x) and one result.
   test_expression(x_equals_zero, 1, 1);
-  // // For the query `x == 1`, we expect one candidate partition and zero results.
+  // // For the query `x == 1`, we expect one indexer (for field x) and zero results.
   test_expression(x_equals_one, 1, 0);
-  // // For the query `#type == "x"`, we expect one candidate partition and one result.
-  test_expression(type_equals_x, 1, 1);
-  // // For the query `#type == "y"`, we expect no candidate partitions.
-  test_expression(type_equals_y, 0, 0);
+  // // For the query `#type == "x"`, we expect one indexer (a one-shot indexer for type queries) and one result.
+  test_expression(type_equals_y, 1, 1);
+  // // For the query `#type == "foo"`, we expect one indexer (a one-shot indexer for type queries) and no results.
+  test_expression(type_equals_foo, 1, 0);
   // Shut down test actors.
   self->send_exit(readonly_partition, caf::exit_reason::user_shutdown);
   self->send_exit(fs, caf::exit_reason::user_shutdown);
