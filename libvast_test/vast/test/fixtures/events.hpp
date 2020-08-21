@@ -18,7 +18,6 @@
 
 #include "vast/defaults.hpp"
 #include "vast/error.hpp"
-#include "vast/event.hpp"
 #include "vast/fwd.hpp"
 
 namespace fixtures {

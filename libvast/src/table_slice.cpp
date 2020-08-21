@@ -21,7 +21,6 @@
 #include "vast/detail/byte_swap.hpp"
 #include "vast/detail/overload.hpp"
 #include "vast/error.hpp"
-#include "vast/event.hpp"
 #include "vast/expression.hpp"
 #include "vast/factory.hpp"
 #include "vast/format/test.hpp"
@@ -29,7 +28,6 @@
 #include "vast/logger.hpp"
 #include "vast/table_slice_builder.hpp"
 #include "vast/table_slice_factory.hpp"
-#include "vast/value.hpp"
 #include "vast/value_index.hpp"
 
 #include <caf/actor_system.hpp>
