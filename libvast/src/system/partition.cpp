@@ -55,6 +55,7 @@
 #include "caf/binary_serializer.hpp"
 #include "caf/broadcast_downstream_manager.hpp"
 #include "caf/deserializer.hpp"
+#include "caf/error.hpp"
 #include "caf/fwd.hpp"
 #include "caf/sec.hpp"
 
@@ -314,16 +315,22 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
   self->state.offset = vast::invalid_id;
   self->state.events = 0;
   self->state.fs_actor = fs;
+  self->state.streaming_initiated = false;
   // stream stage input: table_slice_ptr
   // stream stage output: table_slice_column
   self->state.stage = caf::attach_continuous_stream_stage(
     self,
     [=](caf::unit_t&) {
-      VAST_DEBUG(self, "initializes stream manager"); // clang-format fix
+      VAST_WARNING(self,
+                   "initializes stream manager"); // fixme: warning -> debug
     },
     [=](caf::unit_t&, caf::downstream<table_slice_column>& out,
         table_slice_ptr x) {
-      VAST_DEBUG(self, "got new table slice", to_string(*x));
+      VAST_WARNING(self, "got new table slice",
+                   to_string(*x)); // fixme: warning -> debug
+      // FIXME: putting this line in the handshake message should be enough, but
+      // for some reason it is not :( Why?
+      self->state.streaming_initiated = true;
       // We rely on `invalid_id` actually being the highest possible id
       // when using `min()` below.
       VAST_ASSERT(vast::invalid_id == std::numeric_limits<vast::id>::max());
@@ -338,6 +345,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
       self->state.offset = std::min(x->offset(), self->state.offset);
       self->state.events += x->rows();
       size_t col = 0;
+      VAST_ASSERT(!x->layout().fields.empty());
       for (auto& field : x->layout().fields) {
         auto qf = qualified_record_field{x->layout().name(), field};
         auto& idx = self->state.indexers[qf];
@@ -346,6 +354,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
           // FIXME: properly initialize settings
           idx = self->spawn(indexer, field.type, caf::settings{});
           auto slot = self->state.stage->add_outbound_path(idx);
+          self->state.slots.insert(slot);
           self->state.stage->out().set_filter(slot, qf);
           VAST_DEBUG(self, "spawned new indexer for field", field.name,
                      "at slot", slot);
@@ -354,11 +363,15 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
       }
     },
     [=](caf::unit_t&, const caf::error& err) {
-      if (err) {
-        VAST_ERROR(self, "aborted with error", self->system().render(err));
+      // We get an 'unreachable' error when the stream becomes unreachable
+      // because the actor was destroyed; in this case we can't use `self`
+      // anymore.
+      if (err
+          && caf::exit_reason{err.code()} != caf::exit_reason::unreachable) {
+        VAST_ERROR(self, "was aborted with error", self->system().render(err));
         self->send_exit(self, err);
       }
-      VAST_DEBUG(self, "finalized streaming");
+      VAST_DEBUG_ANON("partition", id, "finalized streaming");
     },
     // Every "outbound path" has a path_state, which consists of a "Filter"
     // and a vector of "T", the output buffer. In the case of a partition,
@@ -376,16 +389,18 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);
+    if (self->state.stage->idle()) {
+      self->state.stage->out().fan_out_flush();
+      self->state.stage->out().force_emit_batches();
+      self->state.stage->out().close();
+    }
     // Delay shutdown if we're currently in the process of persisting.
     if (self->state.persistence_promise.pending()) {
-      VAST_INFO(self, "delaying partition shutdown because persistion is in "
-                      "progress");
+      VAST_INFO(self, "delaying partition shutdown because its still writing "
+                      "to disk");
       self->delayed_send(self, std::chrono::milliseconds(50), msg);
       return;
     }
-    self->state.stage->out().fan_out_flush();
-    self->state.stage->out().force_emit_batches();
-    self->state.stage->out().close();
     auto indexers = std::vector<caf::actor>{};
     for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
       indexers.push_back(idx);
@@ -394,55 +409,72 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
   });
   return {
     [=](caf::stream<table_slice_ptr> in) {
-      VAST_DEBUG(self, "got a new table slice stream");
+      VAST_WARNING(
+        self, "got a new table slice stream handler"); // fixme warning -> debug
       return self->state.stage->add_inbound_path(in);
     },
     [=](atom::persist, const path& part_dir) {
+      // VAST_WARNING(self, "persist request"); // FIXME: remove
       auto& st = self->state;
       // Using `source()` to check if the promise was already initialized.
       if (!st.persistence_promise.source())
         st.persistence_promise = self->make_response_promise();
       st.persist_path = part_dir;
       st.persisted_indexers = 0;
+      VAST_WARNING(self, "still has", self->state.stage->inbound_paths().size(),
+                   "inbound paths and stage is idle? ",
+                   self->state.stage->idle());
       // Wait for outstanding data to avoid data loss.
       // TODO: Maybe a more elegant design would be to send a, say,
       // `persist_stage2` atom when finalizing the stream, but then the case
       // where the stream finishes before persisting starts becomes more
       // complicated.
-      if (!self->state.stage->idle()) {
-        VAST_INFO(self, "waiting for stream before persisting");
+      if (!self->state.streaming_initiated || !self->state.stage->idle()) {
+        VAST_INFO(
+          self,
+          "waiting for stream before persisting"); // FIXME: warning -> info
         self->delayed_send(self, 50ms, atom::persist_v, part_dir);
         return st.persistence_promise;
       }
-      VAST_INFO(self, "sending `snapshot` to indexers");
+      self->state.stage->out().fan_out_flush();
+      self->state.stage->out().force_emit_batches();
+      self->state.stage->out().close();
+      // TODO: This assert might be too strict.
+      VAST_ASSERT(!st.indexers.empty());
+      VAST_WARNING(self, "sending `snapshot` to", st.indexers.size(),
+                   "indexers"); // FIXME: warning -> info
       for (auto& kv : st.indexers) {
-        self->send(kv.second, atom::snapshot_v,
-                   caf::actor_cast<caf::actor>(self));
+        self->send(kv.second, atom::snapshot_v);
       }
       return st.persistence_promise;
     },
-    [=](atom::done, vast::chunk_ptr chunk) {
+    // Semantically this is the "response" to the "request" represented by the
+    // snapshot atom.
+    [=](vast::chunk_ptr chunk) {
       ++self->state.persisted_indexers;
       if (!chunk) {
         // TODO: If one indexer reports an error, should we abandon the
         // whole partition or still persist the remaining chunks?
-        VAST_ERROR(self,
-                   "cant persist an indexer"); // FIXME: send error message
+        // FIXME: send error message
+        VAST_ERROR(self, "cant persist an indexer");
         return;
       }
       auto sender = self->current_sender()->id();
-      VAST_INFO(self, "got chunk from", sender); // FIXME: info -> debug
+      VAST_WARNING(self, "got chunk from", sender); // FIXME: warning -> debug
       // TODO: We technically dont need the `state.chunks` map, we can just put
       // the builder in the state and add new chunks as they arrive.
       self->state.chunks.emplace(sender, chunk);
       if (self->state.persisted_indexers < self->state.indexers.size()) {
-        VAST_DEBUG(self, "waiting for more chunks");
+        VAST_WARNING(self, "waiting for more chunks, got",
+                     self->state.persisted_indexers, "need",
+                     self->state.indexers.size()); // FIXME: warning -> debug
         return;
       }
       flatbuffers::FlatBufferBuilder builder;
       auto partition = pack(builder, self->state);
       if (!partition) {
         VAST_ERROR(self, "error serializing partition", self->state.name);
+        self->state.persistence_promise.deliver(partition.error());
         return;
       }
       builder.Finish(*partition);
@@ -461,7 +493,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
                                                atom::write_v,
                                                *self->state.persist_path,
                                                fbchunk);
-      return; // FIXME: send error message
+      return;
     },
     [=](atom::evaluate, const expression& expr) {
       evaluation_triples result;

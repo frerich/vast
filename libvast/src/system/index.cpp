@@ -402,28 +402,31 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
     self->state.active_partition.stream_slot = slot;
     self->state.active_partition.capacity = partition_capacity;
     self->state.active_partition.id = id;
-    VAST_DEBUG(self, "created new partition", to_string(id));
+    VAST_WARNING(self, "created new partition",
+                 to_string(id)); // fixme: warning -> debug
   };
   auto decomission_active_partition = [=] {
     auto& active = self->state.active_partition;
-    self->state.unpersisted[active.id] = active.actor;
+    auto id = active.id;
+    self->state.unpersisted[id] = active.actor;
     // Send buffered batches.
     self->state.stage->out().fan_out_flush();
     self->state.stage->out().force_emit_batches();
     // Remove active partition from the stream.
     self->state.stage->out().close(active.stream_slot);
     // Persist active partition asynchronously.
-    auto part_dir = dir / to_string(active.id);
+    auto part_dir = dir / to_string(id);
     VAST_DEBUG(self, "persists active partition to", part_dir);
     self->request(active.actor, caf::infinite, atom::persist_v, part_dir)
       .then(
         [=](atom::ok) {
-          VAST_VERBOSE(self, "successfully persisted partition", active.id);
-          self->state.unpersisted.erase(active.id);
-          self->state.persisted_partitions.push_back(active.id);
+          VAST_WARNING(self, "successfully persisted partition", id);
+          // VAST_VERBOSE(self, "successfully persisted partition", id);
+          self->state.unpersisted.erase(id);
+          self->state.persisted_partitions.push_back(id);
         },
         [=](const caf::error& err) {
-          VAST_ERROR(self, "failed to persist partition", active.id, ":", err);
+          VAST_ERROR(self, "failed to persist partition", id, ":", err);
           self->quit(err);
         });
   };
@@ -442,7 +445,6 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
       } else if (x->rows() > active.capacity) {
         VAST_DEBUG(self, "exceeds active capacity by",
                    (x->rows() - active.capacity));
-        self->state.lru_partitions.put(active.id, active.actor);
         decomission_active_partition();
         self->state.flush_to_disk(); // FIXME: delegate this to fs actor
         create_active_partition();
@@ -468,14 +470,17 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
       }
     },
     [=](caf::unit_t&, const caf::error& err) {
-      if (err) {
+      // We get an 'unreachable' error when the stream becomes unreachable
+      // because the actor was destroyed; in this case we can't use `self`
+      // anymore.
+      if (err
+          && caf::exit_reason{err.code()} != caf::exit_reason::unreachable) {
         VAST_ERROR(self, "aborted with error", self->system().render(err));
         // We can shutdown now because we only get a single stream from the
         // importer.
         self->send_exit(self, err);
-      } else {
-        VAST_DEBUG(self, "finalized streaming");
       }
+      VAST_DEBUG_ANON("index finalized streaming");
     });
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     VAST_DEBUG(self, "received EXIT from", msg.source,
@@ -484,20 +489,21 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
     self->state.stage->out().fan_out_flush();
     self->state.stage->out().force_emit_batches();
     self->state.stage->out().close();
-    self->state.stage->stop();
+    // self->state.stage->stop();
+    self->state.stage->shutdown();
     // Bring down active partition.
     if (self->state.active_partition.actor)
       decomission_active_partition();
     // Collect partitions for termination.
     std::vector<caf::actor> partitions;
-    // partitions.reserve(self->state.passive_partitions.size() + 1);
     partitions.reserve(self->state.lru_partitions.size() + 1);
     partitions.push_back(self->state.active_partition.actor);
     for ([[maybe_unused]] auto& [_, part] : self->state.lru_partitions)
       partitions.push_back(part);
+    // META-FIXME: The below fixme is still for the old code, check if its
+    // still true.
     // FIXME: this manual ref-count decrementing should not be necessary, but
     // it currently doesn't work otherwise.
-    // self->state.passive_partitions.clear();
     self->state.lru_partitions.clear();
     // Terminate partition actors.
     VAST_DEBUG(self, "brings down", partitions.size(), "partitions");
@@ -517,10 +523,11 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
     },
     // The partition delegates the actual writing to the filesystem actor,
     // so we dont really get more information than a binary ok/not-ok here.
-    [=](caf::result<atom::ok>) { VAST_VERBOSE(self, "persisted partition"); },
+    [=](caf::result<atom::ok>) {
+      VAST_WARNING(self, "persisted partition");
+    }, // FIXME: warning -> verbose
     // Query handling
     [=](vast::expression expr) {
-      VAST_INFO(self, "got expression", expr); // todo: remove
       auto respond = [&](auto&&... xs) {
         auto mid = self->current_message_id();
         unsafe_response(self, self->current_sender(), {}, mid.response_id(),
@@ -632,7 +639,7 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
       self->delegate(caf::actor_cast<caf::actor>(self), atom::resume_v,
                      query_id, client);
     },
-    // See also comment above `expression_stage2` handler.
+    // See also comment on the previous `atom::resume` handler above.
     [=](atom::resume, uuid query_id, caf::actor client) {
       auto& st = self->state;
       auto iter = st.pending.find(query_id);

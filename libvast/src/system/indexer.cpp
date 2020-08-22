@@ -34,6 +34,8 @@
 #include <caf/attach_stream_sink.hpp>
 
 #include "caf/binary_serializer.hpp"
+#include "caf/response_promise.hpp"
+#include "caf/skip.hpp"
 #include "caf/stateful_actor.hpp"
 
 // #include "caf/serializer_impl.hpp"
@@ -46,6 +48,19 @@ namespace vast::system {
 
 namespace v2 {
 
+namespace {
+
+vast::chunk_ptr chunkify(const value_index_ptr& idx) {
+  std::vector<char> buf;
+  caf::binary_serializer sink{
+    nullptr,
+    buf}; // TODO: do we need to pass the current actor system as first arg?
+  auto error = sink(idx); // todo -> return expected
+  return chunk::make(std::move(buf));
+}
+
+} // namespace
+
 // FIXME: Make a pass to see which options need to be set at indexer creation
 // time and which at runtime.
 caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self,
@@ -56,8 +71,8 @@ caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self,
     [=](caf::stream<table_slice_column>) {
       VAST_ASSERT(!"received incoming stream as read-only indexer");
     },
-    [=](atom::snapshot, caf::actor) {
-      VAST_ASSERT(!"received snapshot request as read-only actor");
+    [=](atom::snapshot) {
+      VAST_ASSERT(!"received snapshot request as read-only indexer");
     },
     [=](const curried_predicate& pred) {
       VAST_DEBUG(self, "got predicate:", pred);
@@ -83,7 +98,6 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
           }
         },
         [=](caf::unit_t&, const std::vector<table_slice_column>& xs) {
-          // TODO: assert that this indexer has not yet been serialized
           VAST_ASSERT(self->state.idx != nullptr);
           for (auto& x : xs) {
             for (size_t i = 0; i < x.slice->rows(); ++i) {
@@ -93,11 +107,18 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
           }
         },
         [=](caf::unit_t&, const error& err) {
+          VAST_WARNING(self, "indexer sink shutting down", err,
+                       "w/ mailbox size");
           if (err && err != caf::exit_reason::user_shutdown) {
             VAST_ERROR(self, "got a stream error:", self->system().render(err));
+            // self->quit(err); // FIXME: Not sure if we actually need to quit
+            // here?
             return;
           }
-          self->quit(err);
+          if (self->state.promise.pending()) {
+            VAST_WARNING(self, "delivers promise after stream shutdown");
+            self->state.promise.deliver(chunkify(self->state.idx));
+          }
         });
     },
     // FIXME: Get rid of one of these handler, i think the bottom one is
@@ -110,18 +131,22 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       VAST_DEBUG(self, "got query for:", op, to_string(rhs));
       return self->state.idx->lookup(op, rhs);
     },
-    [=](atom::snapshot, caf::actor receiver) {
-      std::vector<char> buf;
-      caf::binary_serializer bs{
-        nullptr,
-        buf}; // TODO: do we need to pass the current actor system as first arg?
-      inspect(bs, self->state.idx);
-      auto chunk = chunk::make(std::move(buf));
-      auto sender = self->current_sender();
-      self->send(receiver, atom::done_v, chunk);
+    [=](atom::snapshot) {
+      VAST_WARNING(self, "snapshot default handler");
+      VAST_ASSERT(
+        !self->state.promise.pending()); // The partition is only allowed to
+                                         // send a single snapshot atom.
+      self->state.promise = self->make_response_promise();
+      if (!self->stream_managers().empty()
+          && self->stream_managers().begin()->second->idle()) {
+        VAST_WARNING(self, "delivers promise from snapshot handler");
+
+        self->state.promise.deliver(chunkify(self->state.idx));
+      }
+      return self->state.promise;
     },
     [=](atom::shutdown) {
-      self->quit(caf::exit_reason::user_shutdown); // clang-format fix
+      // self->quit(caf::exit_reason::user_shutdown); // clang-format fix
     },
   };
 }
