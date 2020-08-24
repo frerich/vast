@@ -34,8 +34,9 @@ namespace v2 {
 
 struct indexer_state {
   value_index_ptr idx;
-
   std::string name;
+  bool stream_initiated;
+  caf::response_promise promise;
 };
 
 /// Indexes a table slice column with a single value index.

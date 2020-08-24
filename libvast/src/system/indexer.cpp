@@ -99,6 +99,7 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
         },
         [=](caf::unit_t&, const std::vector<table_slice_column>& xs) {
           VAST_ASSERT(self->state.idx != nullptr);
+          self->state.stream_initiated = true;
           for (auto& x : xs) {
             for (size_t i = 0; i < x.slice->rows(); ++i) {
               auto v = x.slice->at(i, x.column);
@@ -137,10 +138,13 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
         !self->state.promise.pending()); // The partition is only allowed to
                                          // send a single snapshot atom.
       self->state.promise = self->make_response_promise();
-      if (!self->stream_managers().empty()
-          && self->stream_managers().begin()->second->idle()) {
-        VAST_WARNING(self, "delivers promise from snapshot handler");
+      // 
 
+      if (self->state.stream_initiated &&
+        (self->stream_managers().empty() || self->stream_managers().begin()->second->idle())) {
+      // if (!self->stream_managers().empty()
+      //     && self->stream_managers().begin()->second->idle()) {
+        VAST_WARNING(self, "delivering promise immediately, has actor id", self->id());
         self->state.promise.deliver(chunkify(self->state.idx));
       }
       return self->state.promise;
