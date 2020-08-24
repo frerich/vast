@@ -84,8 +84,8 @@ TEST(index roundtrip) {
   // flatbuffer.
   state.unpersisted[vast::uuid::random()] = nullptr;
   state.unpersisted[vast::uuid::random()] = nullptr;
-  state.persisted_partitions.push_back(vast::uuid::random());
-  state.persisted_partitions.push_back(vast::uuid::random());
+  state.persisted_partitions.insert(vast::uuid::random());
+  state.persisted_partitions.insert(vast::uuid::random());
   std::set<vast::uuid> expected_uuids;
   for (auto& kv : state.unpersisted)
     expected_uuids.insert(kv.first);

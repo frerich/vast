@@ -215,7 +215,7 @@ struct index_state {
   detail::lru_cache<uuid, caf::actor, partition_factory> lru_partitions;
 
   /// The set of partitions that exist on disk.
-  std::vector<uuid> persisted_partitions;
+  std::unordered_set<uuid> persisted_partitions;
 
   /// The maximum number of events that a partition can hold.
   size_t partition_capacity;
@@ -419,6 +419,7 @@ struct index_state {
   /// Pointer to the parent actor.
   caf::stateful_actor<index_state>* self;
 
+
   /// Allows to select partitions with timestamps.
   meta_index meta_idx;
 
@@ -469,6 +470,9 @@ struct index_state {
 
   /// Statistics about processed data.
   statistics stats;
+
+  /// Whether to attempt to write index state on exit.
+  bool save_on_exit;
 
   /// Name of the INDEX actor.
   static inline const char* name = "index";

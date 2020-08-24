@@ -277,6 +277,7 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
   for (size_t i = 0; i < indexes->size(); ++i) {
     auto qualified_index = indexes->Get(i);
     auto field = state.combined_layout.fields.at(i);
+    VAST_WARNING_ANON("restoring indexer", i, "with name", qualified_index->qualified_field_name()->str(), "and type", field); // fixme: warning -> debug
     //
     auto qf = qualified_record_field{
       qualified_index->qualified_field_name()->str(), field};
@@ -287,7 +288,7 @@ unpack(const fbs::Partition& partition, readonly_partition_state& state) {
       nullptr, reinterpret_cast<const char*>(data->data()), data->size());
     auto error = bds(vindex_ptr);
     if (error)
-      return make_error(ec::format_error, "not all bytes used for value index");
+      return error;
   }
   VAST_VERBOSE_ANON("restored", state.indexer_states.size(),
                     "indexers for partition", state.partition_uuid);
@@ -354,7 +355,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
           // FIXME: properly initialize settings
           idx = self->spawn(indexer, field.type, caf::settings{});
           auto slot = self->state.stage->add_outbound_path(idx);
-          self->state.slots.insert(slot);
+          // self->state.slots.insert(slot);
           self->state.stage->out().set_filter(slot, qf);
           VAST_DEBUG(self, "spawned new indexer for field", field.name,
                      "at slot", slot);
@@ -402,28 +403,30 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
       return;
     }
     auto indexers = std::vector<caf::actor>{};
-    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
+    auto indexer_ids = std::vector<caf::actor_id>{};
+
+    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers) {
       indexers.push_back(idx);
+      indexer_ids.push_back(idx->id());
+    }
+    std::cerr << "partition terminator for " << caf::to_string(self->state.partition_uuid) << "killing ";
+    for (auto id : indexer_ids)
+      std::cerr << id << ", ";
+    std::cerr << std::endl;
     self->state.indexers.clear();
     shutdown<policy::parallel>(self, std::move(indexers));
   });
   return {
     [=](caf::stream<table_slice_ptr> in) {
-      VAST_WARNING(
-        self, "got a new table slice stream handler"); // fixme warning -> debug
       return self->state.stage->add_inbound_path(in);
     },
     [=](atom::persist, const path& part_dir) {
-      // VAST_WARNING(self, "persist request"); // FIXME: remove
       auto& st = self->state;
       // Using `source()` to check if the promise was already initialized.
       if (!st.persistence_promise.source())
         st.persistence_promise = self->make_response_promise();
       st.persist_path = part_dir;
       st.persisted_indexers = 0;
-      VAST_WARNING(self, "still has", self->state.stage->inbound_paths().size(),
-                   "inbound paths and stage is idle? ",
-                   self->state.stage->idle());
       // Wait for outstanding data to avoid data loss.
       // TODO: Maybe a more elegant design would be to send a, say,
       // `persist_stage2` atom when finalizing the stream, but then the case
@@ -439,8 +442,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id,
       self->state.stage->out().fan_out_flush();
       self->state.stage->out().force_emit_batches();
       self->state.stage->out().close();
-      // TODO: This assert might be too strict.
-      VAST_ASSERT(!st.indexers.empty());
+      if (st.indexers.empty()) {
+        st.persistence_promise.deliver(make_error(ec::logic_error, "partition has no indexers"));
+        return st.persistence_promise;
+      }      
+      // VAST_ASSERT(!st.indexers.empty());
       VAST_WARNING(self, "sending `snapshot` to", st.indexers.size(),
                    "indexers"); // FIXME: warning -> info
       for (auto& kv : st.indexers) {
@@ -553,8 +559,10 @@ readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
     VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);
     auto indexers = std::vector<caf::actor>{};
-    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
+    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers) {
       indexers.push_back(idx);
+    }
+
     // FIXME: Use `terminate()` here to avoid killing the process.
     shutdown<policy::parallel>(self, std::move(indexers));
   });

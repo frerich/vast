@@ -78,7 +78,7 @@ caf::behavior readonly_indexer(caf::stateful_actor<indexer_state>* self,
       VAST_DEBUG(self, "got predicate:", pred);
       return self->state.idx->lookup(pred.op, make_view(pred.rhs));
     },
-    [=](atom::shutdown) { self->quit(caf::exit_reason::user_shutdown); },
+    // [=](atom::shutdown) { self->quit(caf::exit_reason::user_shutdown); },
   };
 }
 
@@ -87,7 +87,7 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
   self->state.name = "indexer-" + to_string(index_type);
   return {
     [=](caf::stream<table_slice_column> in) {
-      VAST_DEBUG(self, "got a new table slice stream");
+      VAST_DEBUG(self, "received new table slice stream");
       return caf::attach_stream_sink(
         self, in,
         [=](caf::unit_t&) {
@@ -108,17 +108,21 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
           }
         },
         [=](caf::unit_t&, const error& err) {
-          VAST_WARNING(self, "indexer sink shutting down", err,
-                       "w/ mailbox size");
-          if (err && err != caf::exit_reason::user_shutdown) {
-            VAST_ERROR(self, "got a stream error:", self->system().render(err));
+          if (err) {
+            if (err == caf::exit_reason::user_shutdown)
+              VAST_ERROR_ANON("indexer got a stream error:", self->system().render(err));
+            else
+              VAST_ERROR(self, "got a stream error:", self->system().render(err));
             // self->quit(err); // FIXME: Not sure if we actually need to quit
             // here?
             return;
-          }
+          } 
+
           if (self->state.promise.pending()) {
             VAST_WARNING(self, "delivers promise after stream shutdown");
             self->state.promise.deliver(chunkify(self->state.idx));
+          } else {
+            VAST_WARNING(self, "stream shutdown but promise not yet pending, actor id", self->id());
           }
         });
     },
@@ -133,10 +137,10 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       return self->state.idx->lookup(op, rhs);
     },
     [=](atom::snapshot) {
-      VAST_WARNING(self, "snapshot default handler");
       VAST_ASSERT(
         !self->state.promise.pending()); // The partition is only allowed to
                                          // send a single snapshot atom.
+      VAST_WARNING(self, "got snapshot msg, has actor id", self->id(), "currently has", self->stream_managers().size(), "stream mgrs");
       self->state.promise = self->make_response_promise();
       // 
 
@@ -149,9 +153,9 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       }
       return self->state.promise;
     },
-    [=](atom::shutdown) {
-      // self->quit(caf::exit_reason::user_shutdown); // clang-format fix
-    },
+    // [=](atom::shutdown) {
+    //   self->quit(caf::exit_reason::user_shutdown); // clang-format fix
+    // },
   };
 }
 

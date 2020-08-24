@@ -80,6 +80,9 @@ struct partition_state {
   /// The streaming stage.
   partition_stream_stage_ptr stage;
 
+  /// Tracks whether we already received at least one table slice.
+  bool streaming_initiated;
+
   /// The combined type of all columns of this partition
   record_type combined_layout;
 

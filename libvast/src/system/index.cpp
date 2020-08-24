@@ -141,7 +141,7 @@ caf::error index_state::load_from_disk() {
       unpack(*uuid_fb, partition_uuid);
       VAST_INFO(self, "unpacked", partition_uuid);
       if (exists(dir / to_string(partition_uuid)))
-        persisted_partitions.push_back(partition_uuid);
+        persisted_partitions.insert(partition_uuid);
       else
         // TODO: remove the problematic uuid from the meta index if we get here
         VAST_WARNING(self, "found partition", partition_uuid,
@@ -235,9 +235,7 @@ void index_state::request_query_map(query_state& lookup,
       part = active_partition.actor;
     else if (auto it = unpersisted.find(partition_id); it != unpersisted.end())
       part = it->second;
-    else
-      // TODO: Add a way for the cache to return an error, and pass it on to
-      // the caller.
+    else if (auto it = persisted_partitions.find(partition_id); it != persisted_partitions.end())
       part = lru_partitions.get_or_load(partition_id);
     if (!part) {
       VAST_ERROR("Could not load partition", partition_id,
@@ -423,7 +421,7 @@ index(caf::stateful_actor<index_state>* self, filesystem_type fs, path dir,
           VAST_WARNING(self, "successfully persisted partition", id);
           // VAST_VERBOSE(self, "successfully persisted partition", id);
           self->state.unpersisted.erase(id);
-          self->state.persisted_partitions.push_back(id);
+          self->state.persisted_partitions.insert(id);
         },
         [=](const caf::error& err) {
           VAST_ERROR(self, "failed to persist partition", id, ":", err);
